@@ -292,7 +292,7 @@ const CMD = { VERSION:0x01, DISKS:0x10, OPEN:0x12, CLOSE:0x13, READ:0x14,
 const MODE_READ          = 0x01;        // FA_READ
 const MODE_WRITE_CREATE  = 0x02 | 0x08; // FA_WRITE | FA_CREATE_ALWAYS = 0x0A
 
-const CHUNK_DATA = 240;   // payload bytes per write packet (kept under MTU)
+const CHUNK_DATA = 50;    // small payload so every write is ONE BLE packet (Linux/BlueZ MTU is often low; the firmware can't reassemble ATT long-writes)
 const HIGH = 0x8000;
 const REQ_TIMEOUT = 12000;
 const MAX_NAME_BYTES = 47; // pixl.amiibo.xyz limit: filename cannot exceed 47 bytes
@@ -448,7 +448,7 @@ async function uploadAtPath(path, bytes){
         if(r.status!==0) throw new Error('write failed (status '+r.status+')');
       } else {
         await rawWrite(pkt);                            // streamed; no app-level reply expected
-        await sleep(25);                                // let the device's flash commit before the next chunk
+        await sleep(10);
       }
       seq++;
     }
