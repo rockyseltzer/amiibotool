@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
     --red:#E60012; --red-dark:#c10010; --red-tint:#fdecec;
@@ -112,6 +113,8 @@
   .fb-actions button{padding:7px 14px; font-size:13px}
   .fb-head{display:flex; align-items:center; gap:12px; padding:6px 4px; border-bottom:2px solid var(--line);
     font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:var(--muted); font-weight:600}
+  .dlrow{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:10px; font-size:13px; font-weight:500}
+  .dlrow button{padding:7px 16px; font-size:13px}
   ul.files li .selbox{flex-shrink:0; margin:0}
   ul.files li .icon{font-size:14px}
 
@@ -169,7 +172,7 @@
 
   <div class="topbar">
     <div class="wordmark">amiibotool</div>
-    <div class="tag">BLE file transfer · pixl.js · v0.6</div>
+    <div class="tag">BLE file transfer · pixl.js · v0.7</div>
   </div>
 
   <div id="unsupported" class="notice" style="display:none">
@@ -219,6 +222,8 @@
       </div>
       <div class="fb-head" id="fbHead" style="display:none"><input type="checkbox" id="selAll"><span>Name</span></div>
       <ul class="files" id="fileList"><li class="empty">Connect to browse files.</li></ul>
+      <div id="dlBar" class="bar" style="display:none"><div id="dlFill"></div></div>
+      <div id="dlRow" class="dlrow" style="display:none"><span id="dlStatus"></span><button id="dlCancel" class="btn-red">Cancel</button></div>
     </div>
   </div>
 
@@ -501,7 +506,7 @@ function renderToolbar(){
   if(n){
     $('fbCount').textContent = `${n} selected`;
     $('renameBtn').disabled = n!==1;
-    $('downloadBtn').disabled = ![...selected].some(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===0; });
+    $('downloadBtn').disabled = false;
   }
   const sa=$('selAll');
   if(sa) sa.checked = curItems.length>0 && selected.size===curItems.length;
@@ -558,23 +563,73 @@ function saveBlob(name, bytes){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),1500);
 }
+let dlCancel=false;
+function endDl(){
+  $('dlRow').style.display='none'; $('dlBar').style.display='none';
+  $('oledStatus').textContent = (device&&device.gatt.connected)?'Connected':'Disconnected';
+}
+async function enumerateFiles(folderPath, zipPrefix, out){
+  // folderPath: device path WITH trailing slash; zipPrefix: path inside the zip
+  const items=await readDir(folderPath);
+  for(const it of items){
+    if(dlCancel) return;
+    if(it.type===1) await enumerateFiles(folderPath+it.name+'/', zipPrefix+it.name+'/', out);
+    else out.push({dev:folderPath+it.name, zip:zipPrefix+it.name, size:it.size});
+  }
+}
 async function opDownload(){
   const names=[...selected];
   const files=names.filter(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===0; });
-  const folders=names.length-files.length;
-  if(folders) log(`skipping ${folders} folder(s) — folder download isn't supported`,'err');
-  if(!files.length){ alert("Select one or more files to download (folders can't be downloaded)."); return; }
-  let ok=0,fail=0;
-  for(const nm of files){
-    const it=curItems.find(i=>i.name===nm);
-    try{
-      log('reading '+nm+'…');
-      const bytes=await readFileAt(currentPath()+nm, it?it.size:0);
-      saveBlob(nm, bytes);
-      log(`downloaded ${nm} (${bytes.length} B)`,'ok'); ok++;
-    }catch(e){ fail++; log('download '+nm+': '+e.message,'err'); }
+  const folders=names.filter(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===1; });
+  if(!files.length && !folders.length){ alert('Select files or folders to download.'); return; }
+
+  // Single file, no folders → plain .bin download (no zip)
+  if(files.length===1 && !folders.length){
+    const nm=files[0], it=curItems.find(i=>i.name===nm);
+    try{ log('reading '+nm+'…'); const bytes=await readFileAt(currentPath()+nm, it?it.size:0); saveBlob(nm, bytes); log(`downloaded ${nm} (${bytes.length} B)`,'ok'); }
+    catch(e){ log('download '+nm+': '+e.message,'err'); }
+    return;
   }
-  log(`download finished — ${ok} saved${fail?`, ${fail} failed`:''}`, fail?'err':'ok');
+
+  if(typeof JSZip==='undefined'){ alert('Zip library not loaded (needs internet on first load). Reload the page, or download files one at a time.'); return; }
+
+  dlCancel=false;
+  $('dlRow').style.display='flex'; $('dlBar').style.display='block'; $('dlFill').style.width='0%';
+  $('dlStatus').textContent='Scanning…';
+
+  // Build the full file list (recursing into folders)
+  const list=[];
+  try{
+    for(const nm of files){ const it=curItems.find(i=>i.name===nm); list.push({dev:currentPath()+nm, zip:nm, size:it?it.size:0}); }
+    for(const nm of folders){ if(dlCancel)break; await enumerateFiles(currentPath()+nm+'/', nm+'/', list); }
+  }catch(e){ log('scan error: '+e.message,'err'); endDl(); return; }
+
+  if(dlCancel){ log('download cancelled','err'); endDl(); return; }
+  if(!list.length){ alert('Nothing to download (the selected folder is empty).'); endDl(); return; }
+  log(`downloading ${list.length} file(s) from device…`);
+
+  const zip=new JSZip();
+  let done=0, fail=0;
+  for(const f of list){
+    if(dlCancel){ log('download cancelled','err'); break; }
+    try{ const bytes=await readFileAt(f.dev, f.size); zip.file(f.zip, bytes); done++; }
+    catch(e){ fail++; log('read '+f.zip+': '+e.message,'err'); }
+    const n=done+fail;
+    $('dlFill').style.width=Math.round(100*n/list.length)+'%';
+    $('dlStatus').textContent=`Reading ${n}/${list.length}`;
+    $('oledStatus').textContent=`Download ${n}/${list.length}`;
+  }
+
+  if(!dlCancel && done>0){
+    $('dlStatus').textContent='Zipping…';
+    try{
+      const blob=await zip.generateAsync({type:'blob'});
+      const base=(folders.length===1 && files.length===0) ? folders[0] : 'amiibotool-download';
+      saveBlob(base+'.zip', blob);
+      log(`downloaded ${done} file(s) as ${base}.zip${fail?`, ${fail} failed`:''}`,'ok');
+    }catch(e){ log('zip error: '+e.message,'err'); }
+  }
+  endDl();
 }
 async function opNewFolder(){
   const name=(prompt('New folder name:','')||'').trim();
@@ -920,6 +975,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   // file-browser controls
   $('newFolderBtn').onclick=opNewFolder;
   $('downloadBtn').onclick=opDownload;
+  $('dlCancel').onclick=()=>{ dlCancel=true; };
   $('renameBtn').onclick=opRename;
   $('deleteBtn').onclick=opDelete;
   $('moveBtn').onclick=openMove;
