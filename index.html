@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>amiibotool · BLE file transfer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --red:#E60012; --red-dark:#c10010; --red-tint:#fdecec;
+    --bg:#f0f0f0; --panel:#ffffff;
+    --ink:#2b2b2b; --muted:#737373; --line:#e3e3e3; --chip:#ebebeb; --chip-h:#dfdfdf;
+    --font:'Rubik',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--font);
+    font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; padding:0 0 64px;
+  }
+  .wrap{max-width:820px; margin:0 auto; padding:0 18px}
+
+  /* ---- header: Nintendo-style red bar ---- */
+  .topbar{background:var(--red); margin:0 -18px 22px; padding:20px 26px;
+    display:flex; align-items:center; gap:14px; border-radius:0 0 18px 18px;
+    box-shadow:0 2px 8px rgba(230,0,18,.18)}
+  .wordmark{font-weight:800; font-size:30px; letter-spacing:-.6px; color:#fff; line-height:1}
+  .topbar .tag{color:rgba(255,255,255,.9); font-size:13px; font-weight:500; margin-left:auto}
+
+  /* ---- status card ---- */
+  .screen{position:relative; background:var(--panel); border:1px solid var(--line);
+    border-radius:16px; padding:4px 20px; box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .screen::after, .screen .glow{display:none}
+  .row{display:flex; justify-content:space-between; gap:16px; padding:12px 0;
+    border-bottom:1px solid var(--line); align-items:center}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--muted); font-size:13px; font-weight:500}
+  .row .v{color:var(--ink); font-weight:600; font-size:14px}
+  .blink{animation:bl 1.1s steps(1) infinite; color:var(--red)}
+  @keyframes bl{50%{opacity:.25}}
+
+  /* ---- controls / buttons ---- */
+  .controls{display:flex; flex-wrap:wrap; gap:10px; margin:18px 0 24px}
+  button{font-family:var(--font); font-weight:600; font-size:14px; border:0;
+    border-radius:999px; padding:11px 22px; cursor:pointer;
+    transition:background .15s, transform .06s, filter .15s}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45; cursor:not-allowed}
+  .btn-green,.btn-blue{background:var(--red); color:#fff}
+  .btn-green:hover,.btn-blue:hover{background:var(--red-dark)}
+  .btn-amber,.btn-ghost{background:var(--chip); color:var(--ink)}
+  .btn-amber:hover,.btn-ghost:hover{background:var(--chip-h)}
+  .btn-red{background:var(--red); color:#fff}
+  .btn-red:hover{background:var(--red-dark)}
+
+  /* ---- cards ---- */
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:16px;
+    margin-bottom:18px; box-shadow:0 1px 3px rgba(0,0,0,.05)}
+  .card h2{margin:0; padding:15px 18px; font-size:15px; font-weight:700; color:var(--ink);
+    border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center}
+  .card .body{padding:14px 18px 18px}
+  .path{font-family:var(--mono); color:var(--muted); font-size:12.5px; font-weight:500}
+
+  /* ---- file list ---- */
+  ul.files{list-style:none; margin:0; padding:0}
+  ul.files li{display:flex; align-items:center; gap:12px; padding:10px 4px; border-bottom:1px solid var(--line)}
+  ul.files li:last-child{border-bottom:0}
+  .fname{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px}
+  .fname.dir{color:var(--red); cursor:pointer; font-weight:600}
+  .fname.dir:hover{text-decoration:underline}
+  .fsize{color:var(--muted); font-size:12px; flex-shrink:0}
+  .icon{width:18px; text-align:center; color:var(--muted); flex-shrink:0}
+  .del{background:transparent; color:var(--red); border:1px solid #f1c7ca; padding:5px 13px; font-size:12px; font-weight:600}
+  .del:hover{background:var(--red-tint)}
+  .empty{color:var(--muted); padding:14px 4px; font-size:14px}
+
+  /* ---- dropzone ---- */
+  .drop{border:2px dashed #d2d2d2; border-radius:14px; padding:28px 16px; text-align:center;
+    color:var(--muted); transition:border-color .15s, background .15s; cursor:pointer; font-size:14px}
+  .drop.hot{border-color:var(--red); background:var(--red-tint); color:var(--ink)}
+  .drop b{color:var(--red)}
+
+  /* ---- console ---- */
+  pre.log{margin:0; padding:13px 16px; background:#fafafa; border:1px solid var(--line);
+    border-radius:12px; height:170px; overflow:auto; font-size:12px; font-family:var(--mono);
+    color:#444; white-space:pre-wrap; word-break:break-word}
+  pre.log .t{color:#9a9a9a} pre.log .ok{color:#1a8a3c} pre.log .err{color:var(--red)}
+  pre.log .tx{color:#b06a00} pre.log .rx{color:#1565c0}
+
+  /* ---- notices ---- */
+  .notice{background:#fff7e6; border:1px solid #f1ddb0; color:#7a5a12; border-radius:12px;
+    padding:13px 15px; font-size:13px; margin-bottom:18px}
+  .notice b{color:#b0790f}
+  .notice.tip{background:var(--red-tint); border-color:#f6cdd0; color:#8a3b40}
+  .notice.tip b{color:var(--red)}
+
+  /* ---- file browser ---- */
+  .fb-bar{display:flex; align-items:center; gap:12px; justify-content:space-between; margin-bottom:10px}
+  .crumbs{font-family:var(--mono); font-size:13px; color:var(--muted); display:flex; flex-wrap:wrap; align-items:center; gap:4px}
+  .crumbs .crumb{color:var(--red); cursor:pointer; font-weight:600}
+  .crumbs .crumb:last-child{color:var(--ink)}
+  .crumbs .crumb:hover{text-decoration:underline}
+  .crumbs .sep{color:#bbb}
+  .fb-new{padding:7px 14px; font-size:13px; flex-shrink:0}
+  .fb-toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+    background:var(--red-tint); border:1px solid #f6cdd0; border-radius:10px; padding:8px 12px; margin-bottom:10px}
+  .fb-count{font-weight:700; color:var(--red); font-size:13px}
+  .fb-actions{display:flex; gap:8px; flex-wrap:wrap}
+  .fb-actions button{padding:7px 14px; font-size:13px}
+  .fb-head{display:flex; align-items:center; gap:12px; padding:6px 4px; border-bottom:2px solid var(--line);
+    font-size:11px; letter-spacing:.5px; text-transform:uppercase; color:var(--muted); font-weight:600}
+  ul.files li .selbox{flex-shrink:0; margin:0}
+  ul.files li .icon{font-size:14px}
+
+  /* ---- move modal ---- */
+  .modal-bg{position:fixed; inset:0; background:rgba(20,24,28,.45); display:flex; align-items:center;
+    justify-content:center; z-index:50; padding:18px}
+  .modal{background:#fff; border-radius:16px; width:100%; max-width:440px; box-shadow:0 18px 50px rgba(0,0,0,.3);
+    padding:20px; display:flex; flex-direction:column; gap:12px}
+  .modal h3{margin:0; font-size:17px; font-weight:700}
+  .modal .crumbs{font-size:12.5px}
+  .movelist{max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:10px; padding:4px 10px}
+  .modal-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:4px}
+
+  /* ---- batch ---- */
+  .batchctl{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:6px}
+  .batchctl label{font-size:12.5px; color:var(--muted); font-weight:500; display:flex; flex-direction:column; gap:6px}
+  select{font-family:var(--font); font-size:14px; background:#fff; color:var(--ink);
+    border:1px solid #d2d2d2; border-radius:10px; padding:10px 12px}
+  .batchctl label.filebtn{cursor:pointer; color:#fff; background:var(--red); border-radius:999px;
+    padding:11px 20px; font-weight:600; font-size:14px}
+  .batchctl label.filebtn:hover{background:var(--red-dark)}
+  .plan{margin-top:14px; font-size:13px}
+  .plan .sum{display:flex; gap:18px; flex-wrap:wrap; margin-bottom:8px}
+  .plan .sum b{color:var(--ink)} .plan .sum .bad b{color:var(--red)}
+  .plan .r{color:var(--muted)} .plan .r.bad{color:var(--red)}
+  input[type=checkbox]{accent-color:var(--red); width:16px; height:16px}
+  .fixhead{display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; margin:4px 0 8px; font-size:12.5px}
+  .fixhead label{display:flex; align-items:center; gap:7px; color:var(--ink); font-weight:600; cursor:pointer}
+  .fixlist{max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:10px; background:#fafafa}
+  .fixrow{display:flex; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line)}
+  .fixrow:last-child{border-bottom:0}
+  .incbox{margin-top:3px; flex-shrink:0}
+  .fixmain{flex:1; min-width:0}
+  .orig{font-size:12.5px; color:var(--muted); margin-bottom:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .edit{display:flex; align-items:center; gap:8px}
+  .edit .arrow{color:var(--muted); flex-shrink:0}
+  .fixin{flex:1; min-width:0; font-family:var(--mono); font-size:12.5px; padding:6px 9px; border:1px solid #d2d2d2; border-radius:8px; background:#fff; color:var(--ink)}
+  .fixin:disabled{background:#f0f0f0; color:#aaa}
+  .vchk{flex-shrink:0; font-weight:700; width:16px; text-align:center}
+  .vchk.good{color:#1a8a3c} .vchk.bad{color:var(--red)}
+  .notbin{margin-top:8px}
+  .plan ul{list-style:none; margin:8px 0 0; padding:10px 12px; max-height:150px; overflow:auto;
+    background:#fafafa; border:1px solid var(--line); border-radius:10px}
+  .plan ul li{padding:2px 0; color:#8a3b40; border:0}
+  .plan ul li .r{color:var(--muted)}
+  .bar{height:10px; background:#ececec; border:1px solid var(--line); border-radius:999px; overflow:hidden; margin-top:14px}
+  .bar>div{height:100%; width:0; background:var(--red); transition:width .12s}
+  .batchrun{display:flex; gap:10px; margin-top:14px}
+  a{color:var(--red); font-weight:500}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="topbar">
+    <div class="wordmark">amiibotool</div>
+    <div class="tag">BLE file transfer · pixl.js · v0.6</div>
+  </div>
+
+  <div id="unsupported" class="notice" style="display:none">
+    <b>Web Bluetooth isn't available here.</b> This page must run in Chrome or Edge (desktop or Android) over <b>https</b> or <b>localhost</b>.
+    It will not connect inside an embedded preview — download the file and open it in Chrome, or host it (e.g. GitHub Pages).
+  </div>
+
+  <div class="notice tip">
+    <b>Before you connect:</b> on the device, set <b>Settings → Sleep Timer → Off</b> (it sleeps in ~15s and drops the link),
+    then open the <b>BLE File Transfer</b> screen. The device pairs as <b>Pixl.js</b>.
+    Filenames are capped at <b>47 bytes</b> and full paths at <b>63 bytes</b> — longer names are rejected here so they don't get silently truncated.
+  </div>
+
+  <!-- signature OLED panel -->
+  <div class="screen">
+    <div class="glow"></div>
+    <div class="screen-rows">
+      <div class="row"><span class="k">Status</span><span class="v" id="oledStatus">Disconnected<span class="blink">_</span></span></div>
+      <div class="row"><span class="k">Device</span><span class="v" id="oledDevice">—</span></div>
+      <div class="row"><span class="k">Firmware</span><span class="v" id="oledFw">—</span></div>
+      <div class="row"><span class="k">Storage</span><span class="v" id="oledStore">—</span></div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="connectBtn" class="btn-green">Connect device</button>
+    <button id="disconnectBtn" class="btn-ghost" disabled>Disconnect</button>
+    <button id="refreshBtn" class="btn-ghost" disabled>Refresh list</button>
+  </div>
+
+  <div class="card">
+    <h2><span>Device storage</span></h2>
+    <div class="body">
+      <div class="fb-bar">
+        <div class="crumbs" id="crumbs">—</div>
+        <button id="newFolderBtn" class="btn-ghost fb-new" style="display:none">+ New folder</button>
+      </div>
+      <div class="fb-toolbar" id="fbToolbar" style="display:none">
+        <span class="fb-count" id="fbCount"></span>
+        <span class="fb-actions">
+          <button id="downloadBtn" class="btn-ghost">Download</button>
+          <button id="renameBtn" class="btn-ghost">Rename</button>
+          <button id="moveBtn" class="btn-ghost">Move</button>
+          <button id="deleteBtn" class="btn-red">Delete</button>
+          <button id="clearSelBtn" class="btn-ghost">Clear</button>
+        </span>
+      </div>
+      <div class="fb-head" id="fbHead" style="display:none"><input type="checkbox" id="selAll"><span>Name</span></div>
+      <ul class="files" id="fileList"><li class="empty">Connect to browse files.</li></ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Upload to current folder</h2>
+    <div class="body">
+      <div class="drop" id="drop">
+        Drop <b>.bin</b> files here, or <b>click to choose</b>.
+        <input type="file" id="filePick" multiple accept=".bin" style="display:none">
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Batch folder upload → E:/amiibo/</h2>
+    <div class="body">
+      <div class="batchctl">
+        <label>Folder layout on device
+          <select id="strategy">
+            <option value="game" selected>One folder per game (recommended)</option>
+            <option value="keep">Keep my exact folders</option>
+            <option value="flat">Flat — no subfolders</option>
+          </select>
+        </label>
+        <label class="filebtn btn-blue">Choose your "amiibo" folder
+          <input type="file" id="folderPick" webkitdirectory directory multiple style="display:none">
+        </label>
+      </div>
+      <div id="plan" class="plan" style="display:none"></div>
+      <div id="batchBar" class="bar" style="display:none"><div id="batchFill"></div></div>
+      <div class="batchrun" style="display:none" id="batchRun">
+        <button id="startBatch" class="btn-green">Upload</button>
+        <button id="cancelBatch" class="btn-red" style="display:none">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Console</h2>
+    <div class="body"><pre class="log" id="log"></pre></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="moveModal" style="display:none">
+  <div class="modal">
+    <h3>Move <span id="moveCount"></span> to…</h3>
+    <div class="crumbs" id="moveCrumbs"></div>
+    <ul class="files movelist" id="moveList"></ul>
+    <div class="modal-actions">
+      <button id="moveCancel" class="btn-ghost">Cancel</button>
+      <button id="moveHere" class="btn-green">Move here</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   pixl.js BLE file-transfer protocol — Web Bluetooth client
+   Service: Nordic UART (NUS). Packet = cmd(u8) status(u8) chunk(u16 LE) data.
+   Chunk high bit (0x8000) set => "more packets follow"; cleared => final.
+   ========================================================================= */
+const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_WRITE   = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // client -> device (write)
+const NUS_NOTIFY  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // device -> client (notify)
+
+// Commands
+const CMD = { VERSION:0x01, DISKS:0x10, OPEN:0x12, CLOSE:0x13, READ:0x14,
+              WRITE:0x15, READDIR:0x16, MKDIR:0x17, DELETE:0x18, RENAME:0x19 };
+
+// FatFS open modes (best-inferred — see note in footer if writes fail):
+const MODE_READ          = 0x01;        // FA_READ
+const MODE_WRITE_CREATE  = 0x02 | 0x08; // FA_WRITE | FA_CREATE_ALWAYS = 0x0A
+
+const CHUNK_DATA = 240;   // payload bytes per write packet (kept under MTU)
+const HIGH = 0x8000;
+const REQ_TIMEOUT = 12000;
+const MAX_NAME_BYTES = 47; // pixl.amiibo.xyz limit: filename cannot exceed 47 bytes
+const MAX_PATH_BYTES = 63; // pixl.amiibo.xyz limit: full path cannot exceed 63 bytes
+
+let device, server, writeChar, notifyChar;
+let pending = null;             // current in-flight request awaiting response
+let cmdLock = Promise.resolve();// serialize commands (one outstanding at a time)
+let drive = 'E';                // default drive letter, refreshed from disk list
+let pathSegs = [];              // current folder path under the drive root
+
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+/* ---------- logging ---------- */
+function log(msg, cls){
+  const el=$('log'); const t=new Date().toLocaleTimeString();
+  el.innerHTML += `<span class="t">${t}</span> <span class="${cls||''}">${msg}</span>\n`;
+  el.scrollTop = el.scrollHeight;
+}
+const hex = b => Array.from(b).map(x=>x.toString(16).padStart(2,'0')).join(' ');
+
+/* ---------- packet helpers ---------- */
+function packet(cmd, chunk, data){
+  const d = data || new Uint8Array(0);
+  const out = new Uint8Array(4 + d.length);
+  out[0]=cmd; out[1]=0; out[2]=chunk & 0xff; out[3]=(chunk>>8)&0xff;
+  out.set(d, 4);
+  return out;
+}
+function u16le(n){ return [n & 0xff, (n>>8)&0xff]; }
+function strBytes(s){ const b=enc.encode(s); return new Uint8Array([...u16le(b.length), ...b]); }
+function concat(arrs){
+  const len = arrs.reduce((a,b)=>a+b.length,0); const out=new Uint8Array(len);
+  let o=0; for(const a of arrs){ out.set(a,o); o+=a.length; } return out;
+}
+
+/* ---------- low-level write ---------- */
+async function rawWrite(bytes){
+  // Use write-with-response (flow-controlled). Retry rather than silently
+  // dropping to write-without-response, which on Linux/BlueZ can lose packets.
+  const m = writeChar.writeValueWithResponse ? 'writeValueWithResponse' : 'writeValueWithoutResponse';
+  let lastErr;
+  for(let i=0;i<3;i++){
+    try{ return await writeChar[m](bytes); }
+    catch(e){ lastErr=e; await new Promise(r=>setTimeout(r,40)); }
+  }
+  throw lastErr;
+}
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+/* ---------- request/response (handles multi-packet replies) ---------- */
+function sendRequest(bytes){
+  // Serialize: chain onto cmdLock so only one request is outstanding.
+  const run = () => new Promise(async (resolve,reject)=>{
+    let done=false;
+    const timer=setTimeout(()=>{ if(!done){done=true; pending=null; reject(new Error('timeout — is the device on the BLE File Transfer screen?'));} }, REQ_TIMEOUT);
+    pending = {
+      parts: [],
+      resolve: r => { if(!done){done=true; clearTimeout(timer); resolve(r);} },
+      reject:  e => { if(!done){done=true; clearTimeout(timer); reject(e);} }
+    };
+    log('TX '+hex(bytes.slice(0,4))+(bytes.length>4?` +${bytes.length-4}b`:''), 'tx');
+    try{ await rawWrite(bytes); }catch(e){ pending=null; if(!done){done=true; clearTimeout(timer); reject(e);} }
+  });
+  cmdLock = cmdLock.then(run, run);
+  return cmdLock;
+}
+
+function onNotify(e){
+  const dv = e.target.value;
+  if(dv.byteLength < 4) return;
+  const cmd=dv.getUint8(0), status=dv.getUint8(1), chunk=dv.getUint16(2,true);
+  const more=(chunk & HIGH)!==0;
+  const data=new Uint8Array(dv.buffer.slice(dv.byteOffset+4, dv.byteOffset+dv.byteLength));
+  if(!pending){ log('RX (unexpected) '+hex(new Uint8Array(dv.buffer.slice(dv.byteOffset,dv.byteOffset+4))),'err'); return; }
+  pending.parts.push(data);
+  if(!more){
+    log(`RX cmd=0x${cmd.toString(16)} status=${status}${pending.parts.length>1?` (${pending.parts.length} pkts)`:''}`, status===0?'rx':'err');
+    const p=pending; pending=null;
+    p.resolve({ cmd, status, data: concat(p.parts) });
+  }
+}
+
+/* ---------- high-level operations ---------- */
+async function getVersion(){
+  const r=await sendRequest(packet(CMD.VERSION,0));
+  if(r.status!==0) return null;
+  if(r.data.length<2) return '';
+  const len=r.data[0]|(r.data[1]<<8);
+  return dec.decode(r.data.slice(2,2+len));
+}
+
+async function getDisks(){
+  const r=await sendRequest(packet(CMD.DISKS,0));
+  if(r.status!==0) throw new Error('disk list failed (status '+r.status+')');
+  const d=r.data; let o=0; const count=d[o++]; const disks=[];
+  for(let i=0;i<count;i++){
+    const st=d[o++]; const label=String.fromCharCode(d[o++]);
+    const nlen=d[o]|(d[o+1]<<8); o+=2;
+    const name=dec.decode(d.slice(o,o+nlen)); o+=nlen;
+    const total=d[o]|(d[o+1]<<8)|(d[o+2]<<16)|(d[o+3]<<24); o+=4;
+    const used =d[o]|(d[o+1]<<8)|(d[o+2]<<16)|(d[o+3]<<24); o+=4;
+    disks.push({status:st,label,name,total:total>>>0,used:used>>>0});
+  }
+  return disks;
+}
+
+function currentPath(){ return `${drive}:/` + pathSegs.join('/') + (pathSegs.length?'/':''); }
+
+async function readDir(path){
+  const r=await sendRequest(packet(CMD.READDIR,0,new Uint8Array(strBytes(path))));
+  if(r.status!==0) throw new Error('read folder failed (status '+r.status+')');
+  const d=r.data; let o=0; const items=[];
+  while(o+2<=d.length){
+    const nlen=d[o]|(d[o+1]<<8); o+=2;
+    if(o+nlen>d.length) break;
+    const name=dec.decode(d.slice(o,o+nlen)); o+=nlen;
+    if(o+6>d.length) break;
+    const size=(d[o]|(d[o+1]<<8)|(d[o+2]<<16)|(d[o+3]<<24))>>>0; o+=4;
+    const type=d[o++]; const mlen=d[o++]; o+=mlen;
+    items.push({name,size,type}); // type: 0 file, 1 folder
+  }
+  return items;
+}
+async function listFolder(){ return readDir(currentPath()); }
+
+async function openFile(path, mode){
+  const body=new Uint8Array([...strBytes(path), mode]);
+  const r=await sendRequest(packet(CMD.OPEN,0,body));
+  if(r.status!==0) throw new Error('open failed (status '+r.status+') — check MODE_* byte');
+  return r.data[0]; // file id
+}
+async function closeFile(id){
+  const r=await sendRequest(packet(CMD.CLOSE,0,new Uint8Array([id])));
+  if(r.status!==0) throw new Error('close failed (status '+r.status+')');
+}
+
+async function uploadAtPath(path, bytes){
+  const id=await openFile(path, MODE_WRITE_CREATE);
+  const total=bytes.length;
+  let seq=0;
+  if(total===0){
+    await sendRequest(buildWrite(id, seq, new Uint8Array(0)));
+  } else {
+    for(let off=0; off<total; off+=CHUNK_DATA){
+      const slice=bytes.slice(off, off+CHUNK_DATA);
+      const last = off+CHUNK_DATA >= total;
+      const chunkField = last ? seq : (seq | HIGH);
+      const pkt=buildWrite(id, chunkField, slice);
+      if(last){
+        const r=await sendRequest(pkt);                 // device replies once, on final packet
+        if(r.status!==0) throw new Error('write failed (status '+r.status+')');
+      } else {
+        await rawWrite(pkt);                            // streamed; no app-level reply expected
+        await sleep(25);                                // let the device's flash commit before the next chunk
+      }
+      seq++;
+    }
+  }
+  await closeFile(id);
+}
+async function uploadFile(name, bytes){
+  const path=currentPath()+name;
+  log('open '+path);
+  await uploadAtPath(path, bytes);
+  log('wrote '+name+' ('+bytes.length+' bytes)', 'ok');
+}
+async function ensureDir(path){
+  // mkdir; ignore "already exists" / non-zero status
+  try{ await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(path)))); }catch(e){}
+}
+function buildWrite(id, chunkField, slice){
+  const d=new Uint8Array(1+slice.length); d[0]=id; d.set(slice,1);
+  return packet(CMD.WRITE, chunkField, d);
+}
+
+async function deleteEntry(name){
+  const r=await sendRequest(packet(CMD.DELETE,0,new Uint8Array(strBytes(currentPath()+name))));
+  if(r.status!==0) throw new Error('delete failed (status '+r.status+')');
+  log('deleted '+name,'ok');
+}
+async function renamePath(oldPath, newPath){
+  const body=new Uint8Array([...strBytes(oldPath), ...strBytes(newPath)]);
+  const r=await sendRequest(packet(CMD.RENAME,0,body));
+  if(r.status!==0) throw new Error('rename/move failed (status '+r.status+')');
+}
+function pathOk(fullPath, name){
+  return enc.encode(name).length<=MAX_NAME_BYTES && enc.encode(fullPath).length<=MAX_PATH_BYTES;
+}
+
+/* ---------- UI glue ---------- */
+function setConnected(on){
+  $('connectBtn').disabled=on; $('disconnectBtn').disabled=!on; $('refreshBtn').disabled=!on;
+  $('oledStatus').innerHTML = on ? 'Connected' : 'Disconnected<span class="blink">_</span>';
+}
+function renderStorage(disks){
+  const d=disks.find(x=>x.status===0)||disks[0];
+  if(!d){ $('oledStore').textContent='—'; return; }
+  drive=d.label;
+  const pct = d.total ? Math.round(100*d.used/d.total) : 0;
+  const kb = n => (n/1024).toFixed(0)+'K';
+  $('oledStore').textContent = `${d.label}: ${kb(d.used)}/${kb(d.total)} ${pct}%`;
+}
+/* ---------- file browser ---------- */
+let selected = new Set();   // selected names in the current folder
+let curItems = [];          // last listed items
+
+function crumbHtml(segs){
+  // segs: ['E:', 'amiibo', ...]; clickable to navigate
+  return segs.map((s,i)=>`<span class="crumb" data-d="${i}">${escapeHtml(s)}</span>`).join('<span class="sep">›</span>');
+}
+function renderCrumbs(){
+  const segs=[drive+':',...pathSegs];
+  const el=$('crumbs'); el.innerHTML=crumbHtml(segs);
+  el.querySelectorAll('.crumb').forEach(c=>{
+    c.onclick=()=>{ const d=+c.dataset.d; pathSegs=pathSegs.slice(0,d); selected.clear(); refresh(); };
+  });
+}
+function renderToolbar(){
+  const n=selected.size;
+  $('fbToolbar').style.display = n? 'flex':'none';
+  if(n){
+    $('fbCount').textContent = `${n} selected`;
+    $('renameBtn').disabled = n!==1;
+    $('downloadBtn').disabled = ![...selected].some(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===0; });
+  }
+  const sa=$('selAll');
+  if(sa) sa.checked = curItems.length>0 && selected.size===curItems.length;
+}
+function renderList(items){
+  curItems=items.slice().sort((a,b)=> (b.type-a.type) || a.name.localeCompare(b.name));
+  // drop selections that no longer exist
+  selected.forEach(nm=>{ if(!curItems.some(i=>i.name===nm)) selected.delete(nm); });
+  renderCrumbs();
+  $('newFolderBtn').style.display = (device && device.gatt.connected) ? 'inline-block' : 'none';
+
+  const ul=$('fileList'); ul.innerHTML='';
+  $('fbHead').style.display = curItems.length ? 'flex' : 'none';
+  if(!curItems.length){ ul.innerHTML='<li class="empty">Empty folder.</li>'; renderToolbar(); return; }
+  for(const it of curItems){
+    const isDir=it.type===1;
+    const li=document.createElement('li');
+    li.innerHTML =
+      `<input type="checkbox" class="selbox" ${selected.has(it.name)?'checked':''}>`+
+      `<span class="icon">${isDir?'📁':'📄'}</span>`+
+      `<span class="fname ${isDir?'dir':''}">${escapeHtml(it.name)}</span>`+
+      (isDir?'':`<span class="fsize">${it.size} B</span>`);
+    li.querySelector('.selbox').onchange=e=>{
+      if(e.target.checked) selected.add(it.name); else selected.delete(it.name);
+      renderToolbar();
+    };
+    if(isDir){
+      li.querySelector('.fname').onclick=()=>{ pathSegs.push(it.name); selected.clear(); refresh(); };
+    }
+    ul.appendChild(li);
+  }
+  renderToolbar();
+}
+
+/* ---- operations ---- */
+async function readFileAt(path, expectedSize){
+  const id=await openFile(path, MODE_READ);
+  let data;
+  try{
+    const r=await sendRequest(packet(CMD.READ,0,new Uint8Array([id])));
+    if(r.status===0xFF) throw new Error("this firmware (2.16.0-rks) doesn't implement read-over-BLE — downloading files isn't possible on this unit");
+    if(r.status!==0) throw new Error('read failed (status '+r.status+')');
+    data=r.data;
+  } finally { await closeFile(id).catch(()=>{}); }
+  if(expectedSize){
+    if(data.length!==expectedSize)
+      log(`note: read ${data.length}B, directory says ${expectedSize}B — verify the file`,'err');
+    if(data.length>expectedSize) data=data.slice(0,expectedSize);
+  }
+  return data;
+}
+function saveBlob(name, bytes){
+  const url=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'}));
+  const a=document.createElement('a'); a.href=url; a.download=name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1500);
+}
+async function opDownload(){
+  const names=[...selected];
+  const files=names.filter(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===0; });
+  const folders=names.length-files.length;
+  if(folders) log(`skipping ${folders} folder(s) — folder download isn't supported`,'err');
+  if(!files.length){ alert("Select one or more files to download (folders can't be downloaded)."); return; }
+  let ok=0,fail=0;
+  for(const nm of files){
+    const it=curItems.find(i=>i.name===nm);
+    try{
+      log('reading '+nm+'…');
+      const bytes=await readFileAt(currentPath()+nm, it?it.size:0);
+      saveBlob(nm, bytes);
+      log(`downloaded ${nm} (${bytes.length} B)`,'ok'); ok++;
+    }catch(e){ fail++; log('download '+nm+': '+e.message,'err'); }
+  }
+  log(`download finished — ${ok} saved${fail?`, ${fail} failed`:''}`, fail?'err':'ok');
+}
+async function opNewFolder(){
+  const name=(prompt('New folder name:','')||'').trim();
+  if(!name) return;
+  const full=currentPath()+name;
+  if(!pathOk(full,name)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
+  try{ const r=await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(full))));
+    if(r.status!==0) throw new Error('mkdir failed (status '+r.status+')');
+    log('created folder '+name,'ok'); await refresh();
+  }catch(e){ log(e.message,'err'); alert(e.message); }
+}
+async function opRename(){
+  if(selected.size!==1) return;
+  const oldName=[...selected][0];
+  const newName=(prompt('Rename to:',oldName)||'').trim();
+  if(!newName || newName===oldName) return;
+  const full=currentPath()+newName;
+  if(!pathOk(full,newName)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
+  try{ await renamePath(currentPath()+oldName, full); log(`renamed ${oldName} → ${newName}`,'ok'); selected.clear(); await refresh(); }
+  catch(e){ log(e.message,'err'); alert(e.message); }
+}
+async function opDelete(){
+  const names=[...selected]; if(!names.length) return;
+  if(!confirm(`Delete ${names.length} item(s) from the device?\n\n${names.slice(0,12).join('\n')}${names.length>12?'\n…':''}\n\n(Folders must be empty to delete.)`)) return;
+  let ok=0,fail=0;
+  for(const nm of names){
+    try{ await deleteEntry(nm); ok++; }catch(e){ fail++; log('delete '+nm+': '+e.message,'err'); }
+  }
+  log(`deleted ${ok}, failed ${fail}`, fail?'err':'ok');
+  selected.clear(); await refresh();
+}
+
+/* ---- move modal ---- */
+let moveSegs=[];
+function moveCurrentPath(){ return `${drive}:/`+moveSegs.join('/')+(moveSegs.length?'/':''); }
+async function openMove(){
+  if(!selected.size) return;
+  moveSegs = [];                       // start the picker at the drive root
+  $('moveCount').textContent = `${selected.size} item(s)`;
+  $('moveModal').style.display='flex';
+  await renderMove();
+}
+async function renderMove(){
+  $('moveCrumbs').innerHTML = crumbHtml([drive+':',...moveSegs]);
+  $('moveCrumbs').querySelectorAll('.crumb').forEach(c=>{
+    c.onclick=async()=>{ moveSegs=moveSegs.slice(0,+c.dataset.d); await renderMove(); };
+  });
+  const ul=$('moveList'); ul.innerHTML='<li class="empty">Loading…</li>';
+  let items=[];
+  try{ items=await readDir(moveCurrentPath()); }catch(e){ ul.innerHTML=`<li class="empty">${escapeHtml(e.message)}</li>`; return; }
+  const dirs=items.filter(i=>i.type===1).sort((a,b)=>a.name.localeCompare(b.name));
+  ul.innerHTML='';
+  if(!dirs.length){ ul.innerHTML='<li class="empty">No subfolders here.</li>'; }
+  for(const d of dirs){
+    const li=document.createElement('li');
+    li.innerHTML=`<span class="icon">📁</span><span class="fname dir">${escapeHtml(d.name)}</span>`;
+    li.querySelector('.fname').onclick=async()=>{ moveSegs.push(d.name); await renderMove(); };
+    ul.appendChild(li);
+  }
+}
+async function doMove(){
+  const dest=moveCurrentPath();
+  const src=currentPath();
+  if(dest===src){ alert('That is the current folder — pick a different destination.'); return; }
+  const names=[...selected];
+  let ok=0,fail=0;
+  for(const nm of names){
+    const it=curItems.find(i=>i.name===nm);
+    const isDir=it && it.type===1;
+    if(isDir && dest.startsWith(src+nm+'/')){ log('skip '+nm+': cannot move a folder into itself','err'); fail++; continue; }
+    const newFull=dest+nm;
+    if(!pathOk(newFull,nm)){ log('skip '+nm+': destination path too long','err'); fail++; continue; }
+    try{ await renamePath(src+nm, newFull); ok++; }catch(e){ fail++; log('move '+nm+': '+e.message,'err'); }
+  }
+  log(`moved ${ok}, failed ${fail}`, fail?'err':'ok');
+  $('moveModal').style.display='none';
+  selected.clear(); await refresh();
+}
+
+function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+async function refresh(){
+  try{
+    const disks=await getDisks(); renderStorage(disks);
+    const items=await listFolder(); renderList(items);
+  }catch(e){ log(e.message,'err'); }
+}
+
+async function connect(){
+  try{
+    log('requesting device…');
+    device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices:true, optionalServices:[NUS_SERVICE]
+    });
+    device.addEventListener('gattserverdisconnected', onDisconnect);
+    log('connecting to '+(device.name||'device')+'…');
+    server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(NUS_SERVICE);
+    writeChar  = await svc.getCharacteristic(NUS_WRITE);
+    notifyChar = await svc.getCharacteristic(NUS_NOTIFY);
+    await notifyChar.startNotifications();
+    notifyChar.addEventListener('characteristicvaluechanged', onNotify);
+    setConnected(true);
+    $('oledDevice').textContent = (device.name||'device').slice(0,16);
+    log('connected','ok');
+
+    let fw=null; try{ fw=await getVersion(); }catch(e){}
+    $('oledFw').textContent = fw ? fw.slice(0,16) : 'n/a';
+    if(fw) log('firmware: '+fw,'ok');
+
+    pathSegs=[]; await refresh();
+  }catch(e){
+    log(e.message,'err');
+    if(e.name!=='NotFoundError') alert('Connection problem: '+e.message);
+  }
+}
+function onDisconnect(){ setConnected(false); $('oledFw').textContent='—'; $('oledStore').textContent='—'; $('crumbs').textContent='—'; $('fbToolbar').style.display='none'; $('fbHead').style.display='none'; $('newFolderBtn').style.display='none'; selected.clear(); $('fileList').innerHTML='<li class="empty">Disconnected.</li>'; log('device disconnected','err'); }
+
+/* ---------- uploads ---------- */
+async function handleFiles(fileList){
+  for(const f of fileList){
+    const nameBytes = enc.encode(f.name).length;
+    const pathBytes = enc.encode(currentPath()+f.name).length;
+    if(nameBytes > MAX_NAME_BYTES){
+      log(`skip "${f.name}" — name is ${nameBytes} bytes (max ${MAX_NAME_BYTES}). Shorten the filename.`, 'err'); continue;
+    }
+    if(pathBytes > MAX_PATH_BYTES){
+      log(`skip "${f.name}" — full path is ${pathBytes} bytes (max ${MAX_PATH_BYTES}). Use a shorter folder or filename.`, 'err'); continue;
+    }
+    try{
+      const buf=new Uint8Array(await f.arrayBuffer());
+      log('uploading '+f.name+'…');
+      await uploadFile(f.name, buf);
+    }catch(e){ log(f.name+': '+e.message,'err'); }
+  }
+  await refresh();
+}
+
+/* ---------- batch folder upload ---------- */
+let batchPlan=null, batchCancel=false;
+
+// Replace accented / smart characters with plain ASCII (ō→o, é→e, “ ”→" etc.)
+function asciiFold(s){
+  let t = s.normalize('NFKD').replace(/[\u0300-\u036f]/g,'');
+  t = t.replace(/[\u2018\u2019\u201A\u201B]/g,"'")
+       .replace(/[\u201C\u201D\u201E\u201F]/g,'"')
+       .replace(/[\u2013\u2014\u2212]/g,'-')
+       .replace(/\u2026/g,'...')
+       .replace(/[^\x00-\x7F]/g,'');
+  return t;
+}
+
+function fits(name, folderPath){
+  return enc.encode(name).length<=MAX_NAME_BYTES &&
+         enc.encode(folderPath+'/'+name).length<=MAX_PATH_BYTES;
+}
+
+// Suggest a filename that fits both caps. Folds to ASCII, drops "(...)" qualifiers,
+// then hard-truncates as a last resort. Returns a name or null.
+function suggestName(filename, folderPath){
+  const dot=filename.lastIndexOf('.');
+  const ext = dot>=0 ? filename.slice(dot) : '';
+  let base = asciiFold(dot>=0 ? filename.slice(0,dot) : filename);
+  const room = Math.min(MAX_NAME_BYTES, MAX_PATH_BYTES - enc.encode(folderPath+'/').length) - enc.encode(ext).length;
+  if(room < 1) return null;
+  while(enc.encode(base).length > room && /\s*\([^()]*\)\s*$/.test(base)){
+    base = base.replace(/\s*\([^()]*\)\s*$/,'').replace(/\s+$/,'');
+  }
+  if(enc.encode(base).length > room){
+    base = dec.decode(enc.encode(base).slice(0,room)).replace(/\uFFFD/g,'').replace(/\s+$/,'');
+  }
+  base = base.replace(/\s+$/,'');
+  return base ? base+ext : null;
+}
+
+function buildPlan(files, strategy){
+  const plan=[];
+  for(const f of files){
+    const rel = f.webkitRelativePath || f.name;
+    const segs = rel.split('/');
+    const filename = segs[segs.length-1];
+    let idx = segs.findIndex(s=>s.toLowerCase()==='amiibo');
+    const after = (idx>=0 ? segs.slice(idx+1) : segs.slice(0,-1).slice(1));
+    const mid = after.slice(0,-1);
+    if(!filename.toLowerCase().endsWith('.bin')){
+      plan.push({name:filename, notbin:true}); continue;
+    }
+    let folders;
+    if(strategy==='flat') folders=[];
+    else if(strategy==='game') folders = mid.length?[mid[0]]:[];
+    else folders = mid;
+    const folderPath = ['E:','amiibo',...folders].join('/');
+    const nameB = enc.encode(filename).length;
+    const pathB = enc.encode(folderPath+'/'+filename).length;
+    const nonascii = /[^\x00-\x7F]/.test(filename);
+    const tooName = nameB>MAX_NAME_BYTES, tooPath = pathB>MAX_PATH_BYTES;
+    let reason='';
+    if(tooName) reason=`name ${nameB}B > ${MAX_NAME_BYTES}`;
+    else if(tooPath) reason=`path ${pathB}B > ${MAX_PATH_BYTES}`;
+    const mustFix = tooName||tooPath;
+    const item={ file:f, name:filename, folderPath, nonascii, reason, mustFix };
+    if(mustFix || nonascii){
+      item.suggested = suggestName(filename, folderPath);
+      item.fixName = item.suggested || '';
+      item.include = !!item.suggested;     // default: apply the suggestion
+    }
+    plan.push(item);
+  }
+  return plan;
+}
+
+// Decide what each item actually does at upload time.
+function resolveItem(p){
+  if(p.notbin) return {action:'skip'};
+  if((p.mustFix||p.nonascii) && p.include){
+    const nm=(p.fixName||'').trim();
+    if(nm && fits(nm, p.folderPath)) return {action:'upload', name:nm, renamed:nm!==p.name};
+    if(p.mustFix) return {action:'skip'};
+  }
+  if(p.mustFix) return {action:'skip'};
+  return {action:'upload', name:p.name, renamed:false};
+}
+
+function renderPlan(){
+  const el=$('plan'); el.style.display='block';
+  const up = batchPlan.map(resolveItem).filter(r=>r.action==='upload').length;
+  const notbin = batchPlan.filter(p=>p.notbin);
+  const fixables = batchPlan.filter(p=>p.mustFix || p.nonascii);
+
+  let html = `<div class="sum">`+
+    `<span>Will upload <b>${up}</b></span>`+
+    (fixables.length?`<span class="bad">Needs attention <b>${fixables.length}</b></span>`:'')+
+    (notbin.length?`<span>Not .bin <b>${notbin.length}</b></span>`:'')+`</div>`;
+
+  if(fixables.length){
+    html += `<div class="fixhead"><label><input type="checkbox" id="fixAll" checked> Apply all suggested names</label>`+
+            `<span class="r">edit any name; ✓ fits, ✕ still too long</span></div>`;
+    html += `<div class="fixlist">`+ fixables.map(p=>{
+      const i=batchPlan.indexOf(p);
+      const tag = p.mustFix ? `<span class="r bad">${p.reason}</span>` : `<span class="r">non-ASCII</span>`;
+      const ok = (p.fixName||'').trim() && fits(p.fixName.trim(), p.folderPath);
+      return `<div class="fixrow" data-i="${i}">`+
+        `<input type="checkbox" class="incbox" ${p.include?'checked':''}>`+
+        `<div class="fixmain">`+
+          `<div class="orig">${escapeHtml(p.name)} — ${tag}</div>`+
+          `<div class="edit"><span class="arrow">→</span>`+
+            `<input class="fixin" type="text" value="${escapeHtml(p.fixName||'')}" ${p.include?'':'disabled'}>`+
+            `<span class="vchk ${ok?'good':'bad'}">${ok?'✓':'✕'}</span></div>`+
+        `</div></div>`;
+    }).join('')+`</div>`;
+  }
+  if(notbin.length){
+    html += `<div class="r notbin">Skipping ${notbin.length} non-.bin file(s): `+
+            notbin.slice(0,6).map(p=>escapeHtml(p.name)).join(', ')+(notbin.length>6?'…':'')+`</div>`;
+  }
+  el.innerHTML=html;
+  $('batchRun').style.display = up?'flex':'none';
+
+  const fa=$('fixAll');
+  if(fa) fa.onchange=()=>{ fixables.forEach(p=>{p.include=fa.checked;}); renderPlan(); };
+  el.querySelectorAll('.fixrow').forEach(row=>{
+    const p=batchPlan[+row.dataset.i];
+    const box=row.querySelector('.incbox'), inp=row.querySelector('.fixin');
+    box.onchange=()=>{ p.include=box.checked; renderPlan(); };
+    inp.oninput=()=>{
+      p.fixName=inp.value;
+      const ok=inp.value.trim() && fits(inp.value.trim(), p.folderPath);
+      const v=row.querySelector('.vchk'); v.textContent=ok?'✓':'✕'; v.className='vchk '+(ok?'good':'bad');
+      const up2=batchPlan.map(resolveItem).filter(r=>r.action==='upload').length;
+      const sb=el.querySelector('.sum b'); if(sb) sb.textContent=up2;
+    };
+  });
+}
+
+async function startBatch(){
+  if(!batchPlan) return;
+  if(!(device && device.gatt.connected)){ alert('Connect to the device first.'); return; }
+  batchCancel=false;
+  $('cancelBatch').style.display='inline-block';
+  $('startBatch').disabled=true;
+
+  const todo=[]; let skipped=0;
+  for(const p of batchPlan){
+    const r=resolveItem(p);
+    if(r.action!=='upload'){ skipped++; continue; }
+    todo.push({ file:p.file, devPath:p.folderPath+'/'+r.name, folderPath:p.folderPath, name:r.name, renamed:r.renamed });
+  }
+
+  const dirset=new Set();
+  for(const p of todo){
+    const segs=p.folderPath.split('/');
+    for(let i=2;i<=segs.length;i++) dirset.add(segs.slice(0,i).join('/'));
+  }
+  const dirs=[...dirset].sort((a,b)=>a.split('/').length-b.split('/').length);
+  log(`creating ${dirs.length} folders…`);
+  for(const d of dirs){ if(batchCancel)break; await ensureDir(d); }
+
+  $('batchBar').style.display='block';
+  let done=0, fail=0;
+  for(const p of todo){
+    if(batchCancel){ log('batch cancelled','err'); break; }
+    try{
+      const buf=new Uint8Array(await p.file.arrayBuffer());
+      await uploadAtPath(p.devPath, buf);
+      if(p.renamed) log(`wrote ${p.name} (renamed)`,'ok');
+      done++;
+    }catch(e){ fail++; log('FAIL '+p.name+': '+e.message,'err'); }
+    const n=done+fail;
+    $('batchFill').style.width = Math.round(100*n/todo.length)+'%';
+    $('oledStatus').textContent = `Upload ${n}/${todo.length}`;
+  }
+  log(`batch finished — ${done} uploaded, ${fail} failed, ${skipped} skipped`,'ok');
+  $('oledStatus').textContent = 'Connected';
+  $('cancelBatch').style.display='none';
+  $('startBatch').disabled=false;
+  await refresh();
+}
+
+/* ---------- wire up ---------- */
+window.addEventListener('DOMContentLoaded',()=>{
+  if(!('bluetooth' in navigator)){ $('unsupported').style.display='block'; }
+  $('connectBtn').onclick=connect;
+  $('disconnectBtn').onclick=()=>{ if(device&&device.gatt.connected) device.gatt.disconnect(); };
+  $('refreshBtn').onclick=refresh;
+
+  const drop=$('drop'), pick=$('filePick');
+  drop.onclick=()=>pick.click();
+  pick.onchange=()=>{ if(pick.files.length) handleFiles(pick.files); pick.value=''; };
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault(); drop.classList.add('hot');}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault(); drop.classList.remove('hot');}));
+  drop.addEventListener('drop',e=>{ if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files); });
+
+  const folderPick=$('folderPick');
+  let lastFiles=null;
+  folderPick.onchange=()=>{
+    lastFiles=folderPick.files;
+    if(lastFiles.length){ batchPlan=buildPlan(lastFiles, $('strategy').value); renderPlan(); }
+  };
+  $('strategy').onchange=()=>{ if(lastFiles && lastFiles.length){ batchPlan=buildPlan(lastFiles, $('strategy').value); renderPlan(); } };
+  $('startBatch').onclick=startBatch;
+  $('cancelBatch').onclick=()=>{ batchCancel=true; };
+
+  // file-browser controls
+  $('newFolderBtn').onclick=opNewFolder;
+  $('downloadBtn').onclick=opDownload;
+  $('renameBtn').onclick=opRename;
+  $('deleteBtn').onclick=opDelete;
+  $('moveBtn').onclick=openMove;
+  $('clearSelBtn').onclick=()=>{ selected.clear(); renderList(curItems); };
+  $('selAll').onchange=e=>{
+    selected.clear();
+    if(e.target.checked) curItems.forEach(i=>selected.add(i.name));
+    renderList(curItems);
+  };
+  $('moveCancel').onclick=()=>{ $('moveModal').style.display='none'; };
+  $('moveHere').onclick=doMove;
+  $('moveModal').onclick=e=>{ if(e.target===$('moveModal')) $('moveModal').style.display='none'; };
+
+  log('Ready. Put the device on its "BLE File Transfer" screen, then Connect.','ok');
+});
+</script>
+</body>
+</html>
