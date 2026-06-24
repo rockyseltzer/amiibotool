@@ -583,7 +583,7 @@ async function opNewFolder(){
   if(!pathOk(full,name)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
   try{ const r=await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(full))));
     if(r.status!==0) throw new Error('mkdir failed (status '+r.status+')');
-    log('created folder '+name,'ok'); await refresh();
+    log('created folder '+name,'ok'); await refresh(true);
   }catch(e){ log(e.message,'err'); alert(e.message); }
 }
 async function opRename(){
@@ -604,7 +604,7 @@ async function opDelete(){
     try{ await deleteEntry(nm); ok++; }catch(e){ fail++; log('delete '+nm+': '+e.message,'err'); }
   }
   log(`deleted ${ok}, failed ${fail}`, fail?'err':'ok');
-  selected.clear(); await refresh();
+  selected.clear(); await refresh(true);
 }
 
 /* ---- move modal ---- */
@@ -656,9 +656,9 @@ async function doMove(){
 
 function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-async function refresh(){
+async function refresh(withStorage){
   try{
-    const disks=await getDisks(); renderStorage(disks);
+    if(withStorage){ const disks=await getDisks(); renderStorage(disks); }
     const items=await listFolder(); renderList(items);
   }catch(e){ log(e.message,'err'); }
 }
@@ -685,7 +685,7 @@ async function connect(){
     $('oledFw').textContent = fw ? fw.slice(0,16) : 'n/a';
     if(fw) log('firmware: '+fw,'ok');
 
-    pathSegs=[]; await refresh();
+    pathSegs=[]; await refresh(true);
   }catch(e){
     log(e.message,'err');
     if(e.name!=='NotFoundError') alert('Connection problem: '+e.message);
@@ -710,7 +710,7 @@ async function handleFiles(fileList){
       await uploadFile(f.name, buf);
     }catch(e){ log(f.name+': '+e.message,'err'); }
   }
-  await refresh();
+  await refresh(true);
 }
 
 /* ---------- batch folder upload ---------- */
@@ -890,7 +890,7 @@ async function startBatch(){
   $('oledStatus').textContent = 'Connected';
   $('cancelBatch').style.display='none';
   $('startBatch').disabled=false;
-  await refresh();
+  await refresh(true);
 }
 
 /* ---------- wire up ---------- */
@@ -898,7 +898,7 @@ window.addEventListener('DOMContentLoaded',()=>{
   if(!('bluetooth' in navigator)){ $('unsupported').style.display='block'; }
   $('connectBtn').onclick=connect;
   $('disconnectBtn').onclick=()=>{ if(device&&device.gatt.connected) device.gatt.disconnect(); };
-  $('refreshBtn').onclick=refresh;
+  $('refreshBtn').onclick=()=>refresh(true);
 
   const drop=$('drop'), pick=$('filePick');
   drop.onclick=()=>pick.click();
