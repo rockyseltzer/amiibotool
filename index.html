@@ -289,11 +289,10 @@ const CMD = { VERSION:0x01, DISKS:0x10, OPEN:0x12, CLOSE:0x13, READ:0x14,
               WRITE:0x15, READDIR:0x16, MKDIR:0x17, DELETE:0x18, RENAME:0x19 };
 
 // FatFS open modes (best-inferred — see note in footer if writes fail):
-const MODE_READ          = 0x01;        // FA_READ
-const MODE_WRITE_CREATE  = 0x02 | 0x08; // FA_WRITE | FA_CREATE_ALWAYS = 0x0A
-
-const CHUNK_DATA = 50;    // small payload so every write is ONE BLE packet (Linux/BlueZ MTU is often low; the firmware can't reassemble ATT long-writes)
-const HIGH = 0x8000;
+const MODE_READ  = 8;     // firmware's open-mode enum for read  (from official tool)
+const MODE_WRITE = 22;     // firmware's open-mode enum for write (from official tool)
+const BATCH = 242;         // max file-data bytes per write packet (official K=243, minus 1 file-id byte)
+const HIGH = 0x8000;       // chunk high-bit: set on multi-packet RESPONSES (device→client)
 const REQ_TIMEOUT = 12000;
 const MAX_NAME_BYTES = 47; // pixl.amiibo.xyz limit: filename cannot exceed 47 bytes
 const MAX_PATH_BYTES = 63; // pixl.amiibo.xyz limit: full path cannot exceed 63 bytes
@@ -423,7 +422,7 @@ async function listFolder(){ return readDir(currentPath()); }
 async function openFile(path, mode){
   const body=new Uint8Array([...strBytes(path), mode]);
   const r=await sendRequest(packet(CMD.OPEN,0,body));
-  if(r.status!==0) throw new Error('open failed (status '+r.status+') — check MODE_* byte');
+  if(r.status!==0) throw new Error('open failed (status '+r.status+')');
   return r.data[0]; // file id
 }
 async function closeFile(id){
@@ -432,42 +431,26 @@ async function closeFile(id){
 }
 
 async function uploadAtPath(path, bytes){
-  const id=await openFile(path, MODE_WRITE_CREATE);
-  const total=bytes.length;
-  let seq=0;
-  if(total===0){
-    await sendRequest(buildWrite(id, seq, new Uint8Array(0)));
-  } else {
-    for(let off=0; off<total; off+=CHUNK_DATA){
-      const slice=bytes.slice(off, off+CHUNK_DATA);
-      const last = off+CHUNK_DATA >= total;
-      const chunkField = last ? seq : (seq | HIGH);
-      const pkt=buildWrite(id, chunkField, slice);
-      if(last){
-        const r=await sendRequest(pkt);                 // device replies once, on final packet
-        if(r.status!==0) throw new Error('write failed (status '+r.status+')');
-      } else {
-        await rawWrite(pkt);                            // streamed; no app-level reply expected
-        await sleep(10);
-      }
-      seq++;
-    }
+  const id=await openFile(path, MODE_WRITE);
+  // Each write is its own cmd-21 packet (file_id + up to BATCH bytes), chunk 0,
+  // sent sequentially and acknowledged one at a time. The device appends each.
+  for(let off=0; off<bytes.length; off+=BATCH){
+    const slice=bytes.slice(off, off+BATCH);
+    const d=new Uint8Array(1+slice.length); d[0]=id; d.set(slice,1);
+    const r=await sendRequest(packet(CMD.WRITE,0,d));
+    if(r.status!==0){ await closeFile(id).catch(()=>{}); throw new Error('write failed (status '+r.status+') at offset '+off); }
   }
   await closeFile(id);
 }
 async function uploadFile(name, bytes){
   const path=currentPath()+name;
-  log('open '+path);
+  log('uploading '+path);
   await uploadAtPath(path, bytes);
   log('wrote '+name+' ('+bytes.length+' bytes)', 'ok');
 }
 async function ensureDir(path){
   // mkdir; ignore "already exists" / non-zero status
   try{ await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(path)))); }catch(e){}
-}
-function buildWrite(id, chunkField, slice){
-  const d=new Uint8Array(1+slice.length); d[0]=id; d.set(slice,1);
-  return packet(CMD.WRITE, chunkField, d);
 }
 
 async function deleteEntry(name){
@@ -559,7 +542,6 @@ async function readFileAt(path, expectedSize){
   let data;
   try{
     const r=await sendRequest(packet(CMD.READ,0,new Uint8Array([id])));
-    if(r.status===0xFF) throw new Error("this firmware (2.16.0-rks) doesn't implement read-over-BLE — downloading files isn't possible on this unit");
     if(r.status!==0) throw new Error('read failed (status '+r.status+')');
     data=r.data;
   } finally { await closeFile(id).catch(()=>{}); }
