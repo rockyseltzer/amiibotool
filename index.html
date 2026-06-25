@@ -481,9 +481,11 @@ function renderStorage(disks){
   const d=disks.find(x=>x.status===0)||disks[0];
   if(!d){ $('oledStore').textContent='—'; return; }
   drive=d.label;
-  const pct = d.total ? Math.round(100*d.used/d.total) : 0;
+  const free = d.used;                       // second field is FREE space, not used
+  const used = Math.max(0, d.total - free);
+  const pct = d.total ? Math.round(100*used/d.total) : 0;
   const kb = n => (n/1024).toFixed(0)+'K';
-  $('oledStore').textContent = `${d.label}: ${kb(d.used)}/${kb(d.total)} ${pct}%`;
+  $('oledStore').textContent = `${kb(used)}/${kb(d.total)} used (${pct}%)`;
 }
 /* ---------- file browser ---------- */
 let selected = new Set();   // selected names in the current folder
