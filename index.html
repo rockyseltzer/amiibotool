@@ -131,13 +131,6 @@
   /* ---- batch ---- */
   .batchctl{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:6px}
   .batchctl label{font-size:12.5px; color:var(--muted); font-weight:500; display:flex; flex-direction:column; gap:6px}
-  .hint{font-size:11px; font-weight:500; color:var(--muted); text-transform:none; letter-spacing:0}
-  .setnote{font-size:12.5px; color:var(--muted); line-height:1.5; margin:0 0 14px}
-  .setgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:14px}
-  .setgrid label{font-size:12.5px; color:var(--muted); font-weight:600; display:flex; flex-direction:column; gap:6px}
-  .setrun{display:flex; gap:10px; flex-wrap:wrap}
-  .sethex{margin-top:12px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; color:var(--muted); word-break:break-all; line-height:1.6}
-  .sethex b{color:var(--red); font-weight:700}
   select{font-family:var(--font); font-size:14px; background:#fff; color:var(--ink);
     border:1px solid #d2d2d2; border-radius:10px; padding:10px 12px}
   .batchctl label.filebtn{cursor:pointer; color:#fff; background:var(--red); border-radius:999px;
@@ -179,7 +172,7 @@
 
   <div class="topbar">
     <div class="wordmark">amiibotool</div>
-    <div class="tag">BLE file transfer · pixl.js · v0.8</div>
+    <div class="tag">BLE file transfer · pixl.js · v0.7</div>
   </div>
 
   <div id="unsupported" class="notice" style="display:none">
@@ -208,38 +201,6 @@
     <button id="connectBtn" class="btn-green">Connect device</button>
     <button id="disconnectBtn" class="btn-ghost" disabled>Disconnect</button>
     <button id="refreshBtn" class="btn-ghost" disabled>Refresh list</button>
-  </div>
-
-  <div class="card">
-    <h2>Device settings <span class="hint">settings.bin editor</span></h2>
-    <div class="body">
-      <p class="setnote">Reads <b>E:/settings.bin</b>, lets you change the verified fields, and writes it back — every other byte is preserved exactly. Changes take effect after the device reloads settings (reboot, or wake from sleep). Your backup and the on-device <b>Reset Default Setting</b> are the safety net.</p>
-      <button id="loadSettings" class="btn-red" disabled>Read settings from device</button>
-      <div id="settingsForm" style="display:none">
-        <div class="setgrid">
-          <label>Language
-            <select id="setLang"></select>
-          </label>
-          <label>Sleep Timeout
-            <select id="setSleep"></select>
-          </label>
-          <label>Database slots
-            <select id="setSlot"></select>
-          </label>
-          <label>Sort field
-            <select id="setSort"></select>
-          </label>
-          <label>Lite Mode
-            <select id="setLite"></select>
-          </label>
-        </div>
-        <div class="setrun">
-          <button id="saveSettings" class="btn-green">Write settings to device</button>
-          <button id="reloadSettings" class="btn-blue">Re-read</button>
-        </div>
-        <div id="setHex" class="sethex"></div>
-      </div>
-    </div>
   </div>
 
   <div class="card">
@@ -514,8 +475,6 @@ function pathOk(fullPath, name){
 /* ---------- UI glue ---------- */
 function setConnected(on){
   $('connectBtn').disabled=on; $('disconnectBtn').disabled=!on; $('refreshBtn').disabled=!on;
-  $('loadSettings').disabled=!on;
-  if(!on){ $('settingsForm').style.display='none'; }
   $('oledStatus').innerHTML = on ? 'Connected' : 'Disconnected<span class="blink">_</span>';
 }
 function renderStorage(disks){
@@ -991,108 +950,11 @@ async function startBatch(){
   await refresh(true);
 }
 
-/* ---------- device settings editor (settings.bin) ---------- */
-const SETTINGS_PATH = 'E:/settings.bin';
-let settingsBytes = null;   // last-read raw 24 bytes (preserved on save)
-
-const LANGS = ['简体中文 (Simplified Chinese)','English','繁體中文 (臺灣)','Español','Magyar','Deutsch',
-  'Français','Dutch (Nederlands)','Português (Brazil)','日本語 (Japanese)','Português (Portugal)',
-  'Italiano','Русский (Russian)','Polski','Svenska'];
-const SLEEP_OPTS = [   // [byteValue, label]; confirmed = verified by diff
-  [0,'OFF'],[15,'15 seconds'],[30,'30 seconds ✓'],[45,'45 seconds'],
-  [60,'1 minute ✓'],[120,'2 minutes'],[180,'3 minutes']];
-const SLOT_OPTS = [10,20,30,40,50];
-
-const SET = {
-  lang:  { byte:14, sel:'setLang'  },
-  sleep: { byte:1,  sel:'setSleep' },
-  slot:  { byte:15, sel:'setSlot'  },
-  sort:  { byte:20, sel:'setSort'  },
-  lite:  { byte:23, sel:'setLite'  },
-};
-
-function fillSelect(id, options, current){
-  // options: array of [value,label]; ensure current value is present (adds "raw" entry if unknown)
-  const el=$(id); el.innerHTML='';
-  let found=false;
-  for(const [v,label] of options){
-    const o=document.createElement('option'); o.value=v; o.textContent=label;
-    if(v===current){ o.selected=true; found=true; }
-    el.appendChild(o);
-  }
-  if(!found){
-    const o=document.createElement('option'); o.value=current;
-    o.textContent=`Unknown (0x${current.toString(16).padStart(2,'0')})`; o.selected=true;
-    el.insertBefore(o, el.firstChild);
-  }
-}
-
-function populateSettings(b){
-  fillSelect('setLang',  LANGS.map((n,i)=>[i,n]),                 b[SET.lang.byte]);
-  fillSelect('setSleep', SLEEP_OPTS,                              b[SET.sleep.byte]);
-  fillSelect('setSlot',  SLOT_OPTS.map(n=>[n,String(n)]),         b[SET.slot.byte]);
-  fillSelect('setSort',  [[0,'Default'],[1,'Name']],              b[SET.sort.byte]);
-  fillSelect('setLite',  [[0,'ON'],[1,'OFF']],                    b[SET.lite.byte]); // stored value is inverted vs label
-  renderSetHex(b, null);
-}
-
-function renderSetHex(b, changed){
-  const cells = Array.from(b).map((x,i)=>{
-    const hot = changed && changed.has(i);
-    const h = x.toString(16).padStart(2,'0');
-    return hot ? `<b>${h}</b>` : h;
-  });
-  $('setHex').innerHTML = 'settings.bin: ' + cells.join(' ');
-}
-
-async function loadSettings(){
-  try{
-    log('reading '+SETTINGS_PATH+'…');
-    const b = await readFileAt(SETTINGS_PATH, 24);
-    if(b.length < 24){ log(`settings.bin is ${b.length} bytes (expected 24) — not editing`,'err'); alert('settings.bin is an unexpected size; not editing.'); return; }
-    settingsBytes = b.slice(0);
-    populateSettings(settingsBytes);
-    $('settingsForm').style.display='block';
-    log('settings loaded','ok');
-  }catch(e){ log('read settings: '+e.message,'err'); }
-}
-
-async function saveSettings(){
-  if(!settingsBytes){ return; }
-  const out = settingsBytes.slice(0);                 // start from the exact bytes on the device
-  out[SET.lang.byte]  = +$('setLang').value;
-  out[SET.sleep.byte] = +$('setSleep').value;
-  out[SET.slot.byte]  = +$('setSlot').value;
-  out[SET.sort.byte]  = +$('setSort').value;
-  out[SET.lite.byte]  = +$('setLite').value;
-
-  const changed = new Set();
-  for(let i=0;i<out.length;i++) if(out[i]!==settingsBytes[i]) changed.add(i);
-  renderSetHex(out, changed);
-
-  if(changed.size===0){ log('no settings changed','ok'); return; }
-  const summary = [...changed].map(i=>`[${i}] ${settingsBytes[i].toString(16).padStart(2,'0')}→${out[i].toString(16).padStart(2,'0')}`).join(', ');
-  if(!confirm(`Write settings.bin to the device?\n\nChanging byte(s): ${summary}\n\nAll other bytes are preserved. Takes effect after the device reloads settings (reboot or wake).`)) return;
-
-  try{
-    $('saveSettings').disabled=true;
-    log('writing '+SETTINGS_PATH+' ('+summary+')');
-    await uploadAtPath(SETTINGS_PATH, out);
-    settingsBytes = out.slice(0);
-    log('settings written — reboot or wake the device to apply','ok');
-  }catch(e){ log('write settings: '+e.message,'err'); }
-  finally{ $('saveSettings').disabled=false; }
-}
-
-
 window.addEventListener('DOMContentLoaded',()=>{
   if(!('bluetooth' in navigator)){ $('unsupported').style.display='block'; }
   $('connectBtn').onclick=connect;
   $('disconnectBtn').onclick=()=>{ if(device&&device.gatt.connected) device.gatt.disconnect(); };
   $('refreshBtn').onclick=()=>refresh(true);
-  $('loadSettings').onclick=loadSettings;
-  $('reloadSettings').onclick=loadSettings;
-  $('saveSettings').onclick=saveSettings;
 
   const drop=$('drop'), pick=$('filePick');
   drop.onclick=()=>pick.click();
