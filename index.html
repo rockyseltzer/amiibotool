@@ -301,7 +301,7 @@ const MODE_READ  = 8;     // firmware's open-mode enum for read  (from official 
 const MODE_WRITE = 22;     // firmware's open-mode enum for write (from official tool)
 const BATCH = 242;         // max file-data bytes per write packet (official K=243, minus 1 file-id byte)
 const HIGH = 0x8000;       // chunk high-bit: set on multi-packet RESPONSES (device→client)
-const REQ_TIMEOUT = 12000;
+const REQ_TIMEOUT = 25000;      // inactivity timeout: reset on every packet, so long multi-packet listings don't abort
 const MAX_NAME_BYTES = 47; // pixl.amiibo.xyz limit: filename cannot exceed 47 bytes
 const MAX_PATH_BYTES = 63; // pixl.amiibo.xyz limit: full path cannot exceed 63 bytes
 
@@ -353,15 +353,20 @@ function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
 /* ---------- request/response (handles multi-packet replies) ---------- */
 function sendRequest(bytes){
+  const expectCmd = bytes[0];
   // Serialize: chain onto cmdLock so only one request is outstanding.
   const run = () => new Promise(async (resolve,reject)=>{
-    let done=false;
-    const timer=setTimeout(()=>{ if(!done){done=true; pending=null; reject(new Error('timeout — is the device on the BLE File Transfer screen?'));} }, REQ_TIMEOUT);
+    let done=false, timer=null;
+    const arm = ()=>{ if(timer) clearTimeout(timer);
+      timer=setTimeout(()=>{ if(!done){done=true; pending=null; reject(new Error('timeout — is the device on the BLE File Transfer screen?')); } }, REQ_TIMEOUT); };
     pending = {
+      expectCmd,
       parts: [],
+      bump: arm,                 // called on each received packet to keep a streaming response alive
       resolve: r => { if(!done){done=true; clearTimeout(timer); resolve(r);} },
       reject:  e => { if(!done){done=true; clearTimeout(timer); reject(e);} }
     };
+    arm();
     log('TX '+hex(bytes.slice(0,4))+(bytes.length>4?` +${bytes.length-4}b`:''), 'tx');
     try{ await rawWrite(bytes); }catch(e){ pending=null; if(!done){done=true; clearTimeout(timer); reject(e);} }
   });
@@ -376,6 +381,11 @@ function onNotify(e){
   const more=(chunk & HIGH)!==0;
   const data=new Uint8Array(dv.buffer.slice(dv.byteOffset+4, dv.byteOffset+dv.byteLength));
   if(!pending){ log('RX (unexpected) '+hex(new Uint8Array(dv.buffer.slice(dv.byteOffset,dv.byteOffset+4))),'err'); return; }
+  if(cmd!==pending.expectCmd){
+    // leftover packet from an earlier (timed-out) request — ignore so it can't corrupt this response
+    log(`RX (stale 0x${cmd.toString(16)}, ignored)`,'err'); return;
+  }
+  pending.bump();                // response still streaming → reset the inactivity timer
   pending.parts.push(data);
   if(!more){
     log(`RX cmd=0x${cmd.toString(16)} status=${status}${pending.parts.length>1?` (${pending.parts.length} pkts)`:''}`, status===0?'rx':'err');
