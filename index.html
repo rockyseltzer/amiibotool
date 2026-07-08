@@ -131,6 +131,8 @@
   /* ---- batch ---- */
   .batchctl{display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end; margin-bottom:6px}
   .batchctl label{font-size:12.5px; color:var(--muted); font-weight:500; display:flex; flex-direction:column; gap:6px}
+  .capchk{display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--muted); font-weight:500; margin:2px 0 10px; cursor:pointer}
+  .capchk input{flex:none}
   select{font-family:var(--font); font-size:14px; background:#fff; color:var(--ink);
     border:1px solid #d2d2d2; border-radius:10px; padding:10px 12px}
   .batchctl label.filebtn{cursor:pointer; color:#fff; background:var(--red); border-radius:999px;
@@ -172,7 +174,7 @@
 
   <div class="topbar">
     <div class="wordmark">amiibotool</div>
-    <div class="tag">BLE file transfer · pixl.js · v0.7</div>
+    <div class="tag">BLE file transfer · pixl.js · v0.9</div>
   </div>
 
   <div id="unsupported" class="notice" style="display:none">
@@ -252,6 +254,7 @@
           <input type="file" id="folderPick" webkitdirectory directory multiple style="display:none">
         </label>
       </div>
+      <label class="capchk"><input type="checkbox" id="capFolders" checked> Cap each folder at 125 files — auto-splits big folders into "Name 1", "Name 2"… (recommended, prevents emulator crashes)</label>
       <div id="plan" class="plan" style="display:none"></div>
       <div id="batchBar" class="bar" style="display:none"><div id="batchFill"></div></div>
       <div class="batchrun" style="display:none" id="batchRun">
@@ -458,10 +461,22 @@ async function ensureDir(path){
   try{ await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(path)))); }catch(e){}
 }
 
-async function deleteEntry(name){
-  const r=await sendRequest(packet(CMD.DELETE,0,new Uint8Array(strBytes(currentPath()+name))));
-  if(r.status!==0) throw new Error('delete failed (status '+r.status+')');
-  log('deleted '+name,'ok');
+async function deleteAt(fullPath){
+  const r=await sendRequest(packet(CMD.DELETE,0,new Uint8Array(strBytes(fullPath))));
+  if(r.status!==0) throw new Error('delete failed (status '+r.status+') on '+fullPath);
+}
+// Delete a file, or a folder with ALL its contents (contents first, then the folder).
+async function deleteRecursive(fullPath, type, onProg){
+  let count=0;
+  if(type===1){
+    const items=await readDir(fullPath+'/');
+    for(const it of items){
+      count += await deleteRecursive(fullPath+'/'+it.name, it.type, onProg);
+    }
+  }
+  await deleteAt(fullPath);
+  count++; if(onProg) onProg();
+  return count;
 }
 async function renamePath(oldPath, newPath){
   const body=new Uint8Array([...strBytes(oldPath), ...strBytes(newPath)]);
@@ -655,12 +670,22 @@ async function opRename(){
 }
 async function opDelete(){
   const names=[...selected]; if(!names.length) return;
-  if(!confirm(`Delete ${names.length} item(s) from the device?\n\n${names.slice(0,12).join('\n')}${names.length>12?'\n…':''}\n\n(Folders must be empty to delete.)`)) return;
-  let ok=0,fail=0;
+  const hasFolder = names.some(nm=>{ const it=curItems.find(i=>i.name===nm); return it && it.type===1; });
+  const warn = hasFolder
+    ? `Delete ${names.length} item(s)?\n\nFolders are deleted with ALL their contents (recursively). This can't be undone.`
+    : `Delete ${names.length} item(s) from the device?`;
+  if(!confirm(`${warn}\n\n${names.slice(0,12).join('\n')}${names.length>12?'\n…':''}`)) return;
+  let ok=0, fail=0, total=0;
+  const tick=()=>{ total++; if(total%25===0){ $('oledStatus').textContent='Deleting '+total+'…'; } };
   for(const nm of names){
-    try{ await deleteEntry(nm); ok++; }catch(e){ fail++; log('delete '+nm+': '+e.message,'err'); }
+    const it=curItems.find(i=>i.name===nm); const type=it?it.type:0;
+    try{
+      const c=await deleteRecursive(currentPath()+nm, type, tick);
+      ok++; log('deleted '+nm+(type===1?` (folder, ${c} items)`:''),'ok');
+    }catch(e){ fail++; log('delete '+nm+': '+e.message,'err'); }
   }
-  log(`deleted ${ok}, failed ${fail}`, fail?'err':'ok');
+  $('oledStatus').textContent = (device&&device.gatt.connected)?'Connected':'Disconnected';
+  log(`delete finished — ${ok} ok, ${fail} failed${total?`, ${total} entries removed`:''}`, fail?'err':'ok');
   selected.clear(); await refresh(true);
 }
 
@@ -807,37 +832,58 @@ function suggestName(filename, folderPath){
   return base ? base+ext : null;
 }
 
+const MAX_FOLDER_BINS = 125;   // recommended cap; folders bigger than this crash the emulator
 function buildPlan(files, strategy){
-  const plan=[];
+  const cap = !$('capFolders') || $('capFolders').checked;
+  // pass 1 — base destination folder segments (under E:/amiibo) for each file
+  const items=[];
   for(const f of files){
     const rel = f.webkitRelativePath || f.name;
     const segs = rel.split('/');
     const filename = segs[segs.length-1];
+    if(!filename.toLowerCase().endsWith('.bin')){ items.push({notbin:true, name:filename}); continue; }
     let idx = segs.findIndex(s=>s.toLowerCase()==='amiibo');
     const after = (idx>=0 ? segs.slice(idx+1) : segs.slice(0,-1).slice(1));
     const mid = after.slice(0,-1);
-    if(!filename.toLowerCase().endsWith('.bin')){
-      plan.push({name:filename, notbin:true}); continue;
-    }
     let folders;
     if(strategy==='flat') folders=[];
     else if(strategy==='game') folders = mid.length?[mid[0]]:[];
     else folders = mid;
-    const folderPath = ['E:','amiibo',...folders].join('/');
-    const nameB = enc.encode(filename).length;
-    const pathB = enc.encode(folderPath+'/'+filename).length;
-    const nonascii = /[^\x00-\x7F]/.test(filename);
-    const tooName = nameB>MAX_NAME_BYTES, tooPath = pathB>MAX_PATH_BYTES;
+    items.push({ file:f, name:filename, folders });
+  }
+  // pass 2 — cap: split any destination folder with >MAX files into "<name> 1", "<name> 2", …
+  let splitSources=0, splitParts=0;
+  if(cap){
+    const groups=new Map();
+    for(const it of items){ if(it.notbin) continue; const k=it.folders.join('/'); if(!groups.has(k)) groups.set(k,[]); groups.get(k).push(it); }
+    for(const arr of groups.values()){
+      if(arr.length<=MAX_FOLDER_BINS) continue;
+      arr.sort((a,b)=>a.name.localeCompare(b.name, undefined, {numeric:true, sensitivity:'base'}));
+      splitSources++; splitParts += Math.ceil(arr.length/MAX_FOLDER_BINS);
+      arr.forEach((it,i)=>{
+        const n=Math.floor(i/MAX_FOLDER_BINS)+1;
+        const f=it.folders.slice();
+        if(f.length) f[f.length-1]=f[f.length-1]+' '+n; else f.push('Amiibo '+n);
+        it.folders=f;
+      });
+    }
+  }
+  // pass 3 — finalize path + name/length validation (after any split changes the folder name)
+  const plan=[]; plan.splitSources=splitSources; plan.splitParts=splitParts;
+  for(const it of items){
+    if(it.notbin){ plan.push({name:it.name, notbin:true}); continue; }
+    const folderPath=['E:','amiibo',...it.folders].join('/');
+    const filename=it.name;
+    const nameB=enc.encode(filename).length;
+    const pathB=enc.encode(folderPath+'/'+filename).length;
+    const nonascii=/[^\x00-\x7F]/.test(filename);
+    const tooName=nameB>MAX_NAME_BYTES, tooPath=pathB>MAX_PATH_BYTES;
     let reason='';
     if(tooName) reason=`name ${nameB}B > ${MAX_NAME_BYTES}`;
     else if(tooPath) reason=`path ${pathB}B > ${MAX_PATH_BYTES}`;
-    const mustFix = tooName||tooPath;
-    const item={ file:f, name:filename, folderPath, nonascii, reason, mustFix };
-    if(mustFix || nonascii){
-      item.suggested = suggestName(filename, folderPath);
-      item.fixName = item.suggested || '';
-      item.include = !!item.suggested;     // default: apply the suggestion
-    }
+    const mustFix=tooName||tooPath;
+    const item={ file:it.file, name:filename, folderPath, nonascii, reason, mustFix };
+    if(mustFix||nonascii){ item.suggested=suggestName(filename, folderPath); item.fixName=item.suggested||''; item.include=!!item.suggested; }
     plan.push(item);
   }
   return plan;
@@ -863,6 +909,7 @@ function renderPlan(){
 
   let html = `<div class="sum">`+
     `<span>Will upload <b>${up}</b></span>`+
+    (batchPlan.splitParts?`<span>125-cap: split <b>${batchPlan.splitSources}</b> folder(s) → <b>${batchPlan.splitParts}</b></span>`:'')+
     (fixables.length?`<span class="bad">Needs attention <b>${fixables.length}</b></span>`:'')+
     (notbin.length?`<span>Not .bin <b>${notbin.length}</b></span>`:'')+`</div>`;
 
@@ -970,6 +1017,7 @@ window.addEventListener('DOMContentLoaded',()=>{
     if(lastFiles.length){ batchPlan=buildPlan(lastFiles, $('strategy').value); renderPlan(); }
   };
   $('strategy').onchange=()=>{ if(lastFiles && lastFiles.length){ batchPlan=buildPlan(lastFiles, $('strategy').value); renderPlan(); } };
+  $('capFolders').onchange=()=>{ if(lastFiles && lastFiles.length){ batchPlan=buildPlan(lastFiles, $('strategy').value); renderPlan(); } };
   $('startBatch').onclick=startBatch;
   $('cancelBatch').onclick=()=>{ batchCancel=true; };
 
