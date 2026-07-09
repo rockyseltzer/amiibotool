@@ -473,7 +473,12 @@ async function ensureDir(path){
 
 async function deleteAt(fullPath){
   const r=await sendRequest(packet(CMD.DELETE,0,new Uint8Array(strBytes(fullPath))));
-  if(r.status!==0) throw new Error('delete failed (status '+r.status+') on '+fullPath);
+  if(r.status!==0){
+    const hint = r.status===1
+      ? ` — device disk error (status 1); the path may be too long for the firmware to delete (${enc.encode(fullPath).length} bytes)`
+      : ` (status ${r.status})`;
+    throw new Error('delete failed'+hint+' on '+fullPath);
+  }
 }
 // Delete a file, or a folder with ALL its contents (contents first, then the folder).
 async function deleteRecursive(fullPath, type, onProg){
@@ -665,7 +670,7 @@ async function opNewFolder(){
   if(!pathOk(full,name)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
   try{ const r=await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(full))));
     if(r.status!==0) throw new Error('mkdir failed (status '+r.status+')');
-    log('created folder '+name,'ok'); await refresh(true);
+    log('created folder '+name,'ok'); localUpsert([{name, type:1, size:0}]); await refreshStorage();
   }catch(e){ log(e.message,'err'); alert(e.message); }
 }
 async function opRename(){
@@ -675,7 +680,7 @@ async function opRename(){
   if(!newName || newName===oldName) return;
   const full=currentPath()+newName;
   if(!pathOk(full,newName)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
-  try{ await renamePath(currentPath()+oldName, full); log(`renamed ${oldName} → ${newName}`,'ok'); selected.clear(); await refresh(); }
+  try{ await renamePath(currentPath()+oldName, full); log(`renamed ${oldName} → ${newName}`,'ok'); localRename(oldName,newName); selected.clear(); renderToolbar(); }
   catch(e){ log(e.message,'err'); alert(e.message); }
 }
 async function opDelete(){
@@ -685,18 +690,20 @@ async function opDelete(){
     ? `Delete ${names.length} item(s)?\n\nFolders are deleted with ALL their contents (recursively). This can't be undone.`
     : `Delete ${names.length} item(s) from the device?`;
   if(!confirm(`${warn}\n\n${names.slice(0,12).join('\n')}${names.length>12?'\n…':''}`)) return;
-  let ok=0, fail=0, total=0;
+  let ok=0, fail=0, total=0; const removed=[];
   const tick=()=>{ total++; if(total%25===0){ $('oledStatus').textContent='Deleting '+total+'…'; } };
   for(const nm of names){
     const it=curItems.find(i=>i.name===nm); const type=it?it.type:0;
     try{
       const c=await deleteRecursive(currentPath()+nm, type, tick);
-      ok++; log('deleted '+nm+(type===1?` (folder, ${c} items)`:''),'ok');
+      ok++; removed.push(nm); log('deleted '+nm+(type===1?` (folder, ${c} items)`:''),'ok');
     }catch(e){ fail++; log('delete '+nm+': '+e.message,'err'); }
   }
   $('oledStatus').textContent = (device&&device.gatt.connected)?'Connected':'Disconnected';
   log(`delete finished — ${ok} ok, ${fail} failed${total?`, ${total} entries removed`:''}`, fail?'err':'ok');
-  selected.clear(); await refresh(true);
+  selected.clear();
+  if(removed.length) localRemove(removed);
+  await refreshStorage();
 }
 
 /* ---- move modal ---- */
@@ -732,18 +739,18 @@ async function doMove(){
   const src=currentPath();
   if(dest===src){ alert('That is the current folder — pick a different destination.'); return; }
   const names=[...selected];
-  let ok=0,fail=0;
+  let ok=0,fail=0; const moved=[];
   for(const nm of names){
     const it=curItems.find(i=>i.name===nm);
     const isDir=it && it.type===1;
     if(isDir && dest.startsWith(src+nm+'/')){ log('skip '+nm+': cannot move a folder into itself','err'); fail++; continue; }
     const newFull=dest+nm;
     if(!pathOk(newFull,nm)){ log('skip '+nm+': destination path too long','err'); fail++; continue; }
-    try{ await renamePath(src+nm, newFull); ok++; }catch(e){ fail++; log('move '+nm+': '+e.message,'err'); }
+    try{ await renamePath(src+nm, newFull); ok++; moved.push(nm); }catch(e){ fail++; log('move '+nm+': '+e.message,'err'); }
   }
   log(`moved ${ok}, failed ${fail}`, fail?'err':'ok');
   $('moveModal').style.display='none';
-  selected.clear(); await refresh();
+  selected.clear(); if(moved.length) localRemove(moved);
 }
 
 function escapeHtml(s){ return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -753,6 +760,32 @@ async function refresh(withStorage){
     if(withStorage){ const disks=await getDisks(); renderStorage(disks); }
     const items=await listFolder(); renderList(items);
   }catch(e){ log(e.message,'err'); }
+}
+// Update just the storage figure (one fast packet) without re-listing the folder.
+async function refreshStorage(){ try{ const disks=await getDisks(); renderStorage(disks); }catch(e){} }
+// Optimistic listing updates: reflect a change in the in-memory list instead of paying
+// the slow post-op readDir. The manual Refresh button still fetches ground truth.
+function localRemove(names){ const s=new Set(names); renderList(curItems.filter(i=>!s.has(i.name))); }
+function localUpsert(entries){
+  const map=new Map(curItems.map(i=>[i.name,i]));
+  for(const e of entries) map.set(e.name, e);
+  renderList([...map.values()]);
+}
+function localRename(oldName, newName){
+  const old=curItems.find(i=>i.name===oldName);
+  renderList(curItems.map(i=> i.name===oldName ? {name:newName, type:old?old.type:0, size:old?old.size:0} : i));
+}
+function localAddChildren(devPaths){
+  // add the immediate children (of the current folder) implied by uploaded device paths
+  const base=currentPath();
+  const map=new Map(curItems.map(i=>[i.name,i]));
+  for(const dp of devPaths){
+    if(!dp.startsWith(base)) continue;
+    const rest=dp.slice(base.length); const seg=rest.split('/')[0];
+    if(!seg || map.has(seg)) continue;
+    map.set(seg, rest.indexOf('/')<0 ? {name:seg,type:0,size:0} : {name:seg,type:1,size:0});
+  }
+  renderList([...map.values()]);
 }
 
 async function connect(){
@@ -787,6 +820,7 @@ function onDisconnect(){ setConnected(false); $('oledFw').textContent='—'; $('
 
 /* ---------- uploads ---------- */
 async function handleFiles(fileList){
+  const added=[];
   for(const f of fileList){
     const nameBytes = enc.encode(f.name).length;
     const pathBytes = enc.encode(currentPath()+f.name).length;
@@ -800,9 +834,11 @@ async function handleFiles(fileList){
       const buf=new Uint8Array(await f.arrayBuffer());
       log('uploading '+f.name+'…');
       await uploadFile(f.name, buf);
+      added.push({name:f.name, type:0, size:buf.length});
     }catch(e){ log(f.name+': '+e.message,'err'); }
   }
-  await refresh(true);
+  if(added.length) localUpsert(added);
+  await refreshStorage();
 }
 
 /* ---------- batch folder upload ---------- */
@@ -987,14 +1023,14 @@ async function startBatch(){
   for(const d of dirs){ if(batchCancel)break; await ensureDir(d); }
 
   $('batchBar').style.display='block';
-  let done=0, fail=0;
+  let done=0, fail=0; const okPaths=[];
   for(const p of todo){
     if(batchCancel){ log('batch cancelled','err'); break; }
     try{
       const buf=new Uint8Array(await p.file.arrayBuffer());
       await uploadAtPath(p.devPath, buf);
       if(p.renamed) log(`wrote ${p.name} (renamed)`,'ok');
-      done++;
+      done++; okPaths.push(p.devPath);
     }catch(e){ fail++; log('FAIL '+p.name+': '+e.message,'err'); }
     const n=done+fail;
     $('batchFill').style.width = Math.round(100*n/todo.length)+'%';
@@ -1004,7 +1040,8 @@ async function startBatch(){
   $('oledStatus').textContent = 'Connected';
   $('cancelBatch').style.display='none';
   $('startBatch').disabled=false;
-  await refresh(true);
+  if(okPaths.length) localAddChildren(okPaths);
+  await refreshStorage();
 }
 
 window.addEventListener('DOMContentLoaded',()=>{
