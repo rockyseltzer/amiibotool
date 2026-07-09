@@ -788,20 +788,36 @@ function localAddChildren(devPaths){
   renderList([...map.values()]);
 }
 
+async function connectGatt(attempts){
+  let lastErr;
+  for(let i=0;i<attempts;i++){
+    try{
+      const srv = await device.gatt.connect();
+      const svc = await srv.getPrimaryService(NUS_SERVICE);
+      const wc  = await svc.getCharacteristic(NUS_WRITE);
+      const nc  = await svc.getCharacteristic(NUS_NOTIFY);
+      await nc.startNotifications();
+      return { srv, wc, nc };
+    }catch(e){
+      lastErr=e;
+      try{ if(device.gatt.connected) device.gatt.disconnect(); }catch(_){}
+      if(i<attempts-1){ log(`connect attempt ${i+1} failed, retrying…`,'err'); await new Promise(r=>setTimeout(r, 700*(i+1))); }
+    }
+  }
+  throw lastErr;
+}
 async function connect(){
   try{
     log('requesting device…');
     device = await navigator.bluetooth.requestDevice({
       acceptAllDevices:true, optionalServices:[NUS_SERVICE]
     });
-    device.addEventListener('gattserverdisconnected', onDisconnect);
     log('connecting to '+(device.name||'device')+'…');
-    server = await device.gatt.connect();
-    const svc = await server.getPrimaryService(NUS_SERVICE);
-    writeChar  = await svc.getCharacteristic(NUS_WRITE);
-    notifyChar = await svc.getCharacteristic(NUS_NOTIFY);
-    await notifyChar.startNotifications();
+    const { srv, wc, nc } = await connectGatt(4);      // retry transient BlueZ failures before giving up
+    server=srv; writeChar=wc; notifyChar=nc;
     notifyChar.addEventListener('characteristicvaluechanged', onNotify);
+    device.removeEventListener('gattserverdisconnected', onDisconnect);
+    device.addEventListener('gattserverdisconnected', onDisconnect);
     setConnected(true);
     $('oledDevice').textContent = (device.name||'device').slice(0,16);
     log('connected','ok');
@@ -813,7 +829,7 @@ async function connect(){
     pathSegs=[]; await refresh(true);
   }catch(e){
     log(e.message,'err');
-    if(e.name!=='NotFoundError') alert('Connection problem: '+e.message);
+    if(e.name!=='NotFoundError') alert('Connection problem: '+e.message+'\n\nMake sure the device is on its "BLE File Transfer" screen, then try Connect again.');
   }
 }
 function onDisconnect(){ setConnected(false); $('oledFw').textContent='—'; $('oledStore').textContent='—'; $('crumbs').textContent='—'; $('fbToolbar').style.display='none'; $('fbHead').style.display='none'; $('newFolderBtn').style.display='none'; selected.clear(); $('fileList').innerHTML='<li class="empty">Disconnected.</li>'; log('device disconnected','err'); }
@@ -889,7 +905,9 @@ function buildPlan(files, strategy){
     const filename = segs[segs.length-1];
     if(!filename.toLowerCase().endsWith('.bin')){ items.push({notbin:true, name:filename}); continue; }
     let idx = segs.findIndex(s=>s.toLowerCase()==='amiibo');
-    const after = (idx>=0 ? segs.slice(idx+1) : segs.slice(0,-1).slice(1));
+    // Everything after an "amiibo" segment, OR — if you dragged a game folder directly
+    // (e.g. "Animal Crossing") — the whole path including that folder's name (don't strip it).
+    const after = (idx>=0 ? segs.slice(idx+1) : segs);
     const mid = after.slice(0,-1);
     let folders;
     if(strategy==='flat') folders=[];
