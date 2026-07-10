@@ -832,7 +832,27 @@ async function connect(){
     if(e.name!=='NotFoundError') alert('Connection problem: '+e.message+'\n\nMake sure the device is on its "BLE File Transfer" screen, then try Connect again.');
   }
 }
-function onDisconnect(){ setConnected(false); $('oledFw').textContent='—'; $('oledStore').textContent='—'; $('crumbs').textContent='—'; $('fbToolbar').style.display='none'; $('fbHead').style.display='none'; $('newFolderBtn').style.display='none'; selected.clear(); $('fileList').innerHTML='<li class="empty">Disconnected.</li>'; log('device disconnected','err'); }
+let batchRunning=false;
+function onDisconnect(){
+  setConnected(false);
+  if(batchRunning){ log('device disconnected (mid-batch)','err'); return; }  // batch loop will handle reconnect
+  $('oledFw').textContent='—'; $('oledStore').textContent='—'; $('crumbs').textContent='—'; $('fbToolbar').style.display='none'; $('fbHead').style.display='none'; $('newFolderBtn').style.display='none'; selected.clear(); $('fileList').innerHTML='<li class="empty">Disconnected.</li>'; log('device disconnected','err');
+}
+function isDisconnectError(e){
+  const m=(e&&e.message)||'';
+  return /disconnect|GATT Server|Cannot perform GATT/i.test(m) || (device && device.gatt && !device.gatt.connected);
+}
+async function reconnectMidBatch(){
+  // Reconnect to the already-granted device (no user gesture needed) and reset protocol state.
+  pending=null; cmdLock=Promise.resolve();
+  try{
+    const { srv, wc, nc } = await connectGatt(5);
+    server=srv; writeChar=wc; notifyChar=nc;
+    nc.addEventListener('characteristicvaluechanged', onNotify);
+    setConnected(true);
+    return true;
+  }catch(e){ return false; }
+}
 
 /* ---------- uploads ---------- */
 async function handleFiles(fileList){
@@ -1041,25 +1061,42 @@ async function startBatch(){
   for(const d of dirs){ if(batchCancel)break; await ensureDir(d); }
 
   $('batchBar').style.display='block';
-  let done=0, fail=0; const okPaths=[];
-  for(const p of todo){
+  batchRunning=true;
+  let done=0, fail=0, aborted=false, reconnects=0; const okPaths=[];
+  for(let i=0; i<todo.length && !aborted; i++){
     if(batchCancel){ log('batch cancelled','err'); break; }
+    const p=todo[i];
     try{
+      if(!(device && device.gatt.connected)) throw new Error('GATT Server is disconnected');
       const buf=new Uint8Array(await p.file.arrayBuffer());
       await uploadAtPath(p.devPath, buf);
       if(p.renamed) log(`wrote ${p.name} (renamed)`,'ok');
       done++; okPaths.push(p.devPath);
-    }catch(e){ fail++; log('FAIL '+p.name+': '+e.message,'err'); }
+    }catch(e){
+      if(isDisconnectError(e) && !batchCancel && reconnects<12){
+        reconnects++;
+        log(`connection dropped at ${p.name} — reconnecting (attempt ${reconnects})…`,'err');
+        $('oledStatus').textContent='Reconnecting…';
+        await new Promise(r=>setTimeout(r,1500));
+        if(await reconnectMidBatch()){ log('reconnected — resuming','ok'); i--; continue; }  // retry this same file
+        aborted=true; log('could not reconnect — batch stopped; re-run it to finish (already-uploaded files are simply overwritten)','err');
+      }else if(isDisconnectError(e)){
+        aborted=true; log('connection lost — batch stopped'+(reconnects>=12?' (too many reconnects)':''),'err');
+      }else{
+        fail++; log('FAIL '+p.name+': '+e.message,'err');
+      }
+    }
     const n=done+fail;
     $('batchFill').style.width = Math.round(100*n/todo.length)+'%';
     $('oledStatus').textContent = `Upload ${n}/${todo.length}`;
   }
-  log(`batch finished — ${done} uploaded, ${fail} failed, ${skipped} skipped`,'ok');
-  $('oledStatus').textContent = 'Connected';
+  batchRunning=false;
+  log(`batch ${aborted?'STOPPED':'finished'} — ${done} uploaded, ${fail} failed, ${skipped} skipped${aborted?`, ${todo.length-done-fail} not attempted`:''}`, aborted?'err':'ok');
+  $('oledStatus').textContent = (device&&device.gatt.connected)?'Connected':'Disconnected';
   $('cancelBatch').style.display='none';
   $('startBatch').disabled=false;
   if(okPaths.length) localAddChildren(okPaths);
-  await refreshStorage();
+  if(device&&device.gatt.connected) await refreshStorage();
 }
 
 window.addEventListener('DOMContentLoaded',()=>{
