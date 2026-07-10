@@ -2,7 +2,7 @@
 
 ## About
 This website allows you to connect to your Amiibotool/Evergenesis/nfctool to manage files on the device storage.   
-I have implemented bulk upload, edit, and delete features in this repo.
+I have implemented bulk upload, edit, delete, and download features in this repo.
 
 ## Website Link
 [https://rockyseltzer.github.io/amiibotool/](https://rockyseltzer.github.io/amiibotool/)
