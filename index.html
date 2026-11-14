@@ -75,6 +75,7 @@
 
   .drop{border:2px dashed #d2d2d2; border-radius:14px; padding:28px 16px; text-align:center;
     color:var(--muted); transition:border-color .15s, background .15s; cursor:pointer; font-size:14px}
+  .drop.blocked{opacity:.45; pointer-events:none}
   .drop.hot{border-color:var(--red); background:var(--red-tint); color:var(--ink)}
   .drop b{color:var(--red)}
 
@@ -89,6 +90,9 @@
   .notice b{color:#b0790f}
   .notice.tip{background:var(--red-tint); border-color:#f6cdd0; color:#8a3b40}
   .notice.tip b{color:var(--red)}
+  .notice.compat{background:#fff; border:1px solid var(--line); border-left:4px solid var(--red); color:var(--ink)}
+  .notice.compat b{color:var(--ink)}
+  .notice.compat a{color:var(--red); font-weight:600}
 
   .fb-bar{display:flex; align-items:center; gap:12px; justify-content:space-between; margin-bottom:10px}
   .crumbs{font-family:var(--mono); font-size:13px; color:var(--muted); display:flex; flex-wrap:wrap; align-items:center; gap:4px}
@@ -165,7 +169,11 @@
 
   <div class="topbar">
     <div class="wordmark">amiibotool</div>
-    <div class="tag">BLE file transfer · pixl.js · v1.6</div>
+    <div class="tag">BLE file transfer · pixl.js · v1.7</div>
+  </div>
+
+  <div class="notice compat">
+    <b>Firmware compatibility.</b> This website is designed exclusively for the Amiibotool custom firmware, version 2.6 or later. It is not compatible with the original Pixl.js firmware or other forks. Download the latest release and installation instructions from <a href="https://github.com/rockyseltzer/amiibotool-firmware" target="_blank" rel="noopener">https://github.com/rockyseltzer/amiibotool-firmware</a>.
   </div>
 
   <div id="unsupported" class="notice" style="display:none">
@@ -176,7 +184,12 @@
   <div class="notice tip">
     <b>Before you connect:</b> on the device, set <b>Settings → Sleep Timer → Off</b> (it sleeps in ~15s and drops the link),
     then open the <b>BLE File Transfer</b> screen. The device pairs as <b>Pixl.js</b>.
-    Filenames are capped at <b>47 bytes</b> and full paths at <b>63 bytes</b> — longer names are rejected here so they don't get silently truncated.
+    Filenames are capped at <b>47 bytes</b> and full paths at <b>96 bytes</b> — longer names are rejected here so they aren't saved under a different name.
+  </div>
+
+  <div id="fwWarn" class="notice" style="display:none">
+    <b>This site needs Amiibotool firmware v2.6 or later.</b> Your device reports <b id="fwWarnVer">—</b>.<br>
+    Uploads, new folders, renames and moves are turned off; browsing, downloading, and deleting still work.
   </div>
 
   <div class="screen">
@@ -245,7 +258,7 @@
         </label>
       </div>
       <label class="capchk"><input type="checkbox" id="capFolders" checked> Cap each folder at <input type="number" id="capSize" value="115" min="10" max="200" style="width:64px"> files — auto-splits into "Name 1", "Name 2"…</label>
-      <div class="caphelp">Capping folders keeps every file visible on the device and avoids crashes. A cap of 115 is recommended.<br><b>Note:</b> On original pixl.js v2.16.0 firmware, a folder can still crash when a .bin is opened — lower the cap to ~60 if that happens. I have fixed this crash in my custom fork: <a href="https://github.com/rockyseltzer/amiibotool-firmware" target="_blank" rel="noopener">https://github.com/rockyseltzer/amiibotool-firmware</a></div>
+      <div class="caphelp">Capping folders keeps every file visible on the device and avoids crashes. A cap of 115 is recommended.</div>
       <div id="plan" class="plan" style="display:none"></div>
       <div id="batchBar" class="bar" style="display:none"><div id="batchFill"></div></div>
       <div class="batchrun" style="display:none" id="batchRun">
@@ -288,7 +301,31 @@ const BATCH = 242;
 const HIGH = 0x8000;
 const REQ_TIMEOUT = 25000;
 const MAX_NAME_BYTES = 47;
-const MAX_PATH_BYTES = 63;
+const MAX_PATH_BYTES = 96;
+const MAX_FOLDER_BYTES = 88;
+function pathLen(p){ return enc.encode(p.replace(/^[A-Za-z]:(?=\/)/,'')).length; }
+function folderOk(fullPath, name){ return enc.encode(name).length<=MAX_NAME_BYTES && pathLen(fullPath)<=MAX_FOLDER_BYTES; }
+function isSupportedFirmware(fw){
+  const m=/^v(\d+)\.(\d+)/.exec(fw||'');
+  if(!m) return false;
+  const major=+m[1], minor=+m[2];
+  return major>2 || (major===2 && minor>=6);
+}
+let fwSupported=true;
+const FW_MSG='This site needs Amiibotool firmware v2.6 or later. Update from Settings → Firmware Update. Download: https://github.com/rockyseltzer/amiibotool-firmware/releases';
+function writesBlocked(){
+  if(device && device.gatt.connected && !fwSupported){ alert(FW_MSG+'\n\nBrowsing, downloading and deleting still work.'); return true; }
+  return false;
+}
+function applyFwGate(){
+  const blocked = !!(device && device.gatt.connected && !fwSupported);
+  $('fwWarn').style.display = blocked ? 'block' : 'none';
+  $('newFolderBtn').disabled = blocked;
+  $('renameBtn').disabled = blocked || selected.size!==1;
+  $('moveBtn').disabled = blocked;
+  $('startBatch').disabled = blocked;
+  $('drop').classList.toggle('blocked', blocked);
+}
 
 let device, server, writeChar, notifyChar;
 let pending = null;
@@ -455,7 +492,7 @@ async function deleteAt(fullPath){
   const r=await sendRequest(packet(CMD.DELETE,0,new Uint8Array(strBytes(fullPath))));
   if(r.status!==0){
     const hint = r.status===1
-      ? ` — device disk error (status 1); the path may be too long for the firmware to delete (${enc.encode(fullPath).length} bytes)`
+      ? ` — device disk error (status 1); the path may be too long for the firmware to delete (${pathLen(fullPath)} bytes)`
       : ` (status ${r.status})`;
     throw new Error('delete failed'+hint+' on '+fullPath);
   }
@@ -479,7 +516,26 @@ async function renamePath(oldPath, newPath){
   if(r.status!==0) throw new Error('rename/move failed (status '+r.status+')');
 }
 function pathOk(fullPath, name){
-  return enc.encode(name).length<=MAX_NAME_BYTES && enc.encode(fullPath).length<=MAX_PATH_BYTES;
+  return enc.encode(name).length<=MAX_NAME_BYTES && pathLen(fullPath)<=MAX_PATH_BYTES;
+}
+async function maxInnerPath(dirPath){
+  let m=0;
+  for(const it of await readDir(dirPath+'/')){
+    let l=enc.encode('/'+it.name).length;
+    if(it.type===1) l+=await maxInnerPath(dirPath+'/'+it.name);
+    if(l>m) m=l;
+  }
+  return m;
+}
+async function pathProblem(oldFull, newFull, newName, isDir){
+  if(enc.encode(newName).length>MAX_NAME_BYTES) return `Name too long — ${enc.encode(newName).length} bytes (max ${MAX_NAME_BYTES}).`;
+  if(!isDir) return pathLen(newFull)>MAX_PATH_BYTES ? `Path too long — ${pathLen(newFull)} bytes (max ${MAX_PATH_BYTES}).` : '';
+  if(pathLen(newFull)>MAX_FOLDER_BYTES) return `Folder path too long — ${pathLen(newFull)} bytes (max ${MAX_FOLDER_BYTES}).`;
+  if(pathLen(newFull)<=pathLen(oldFull)) return '';
+  let inner=0;
+  try{ inner=await maxInnerPath(oldFull); }catch(e){ return 'Could not check the folder contents: '+e.message; }
+  const longest=pathLen(newFull)+inner;
+  return longest>MAX_PATH_BYTES ? `A file inside would end up ${longest} bytes long (max ${MAX_PATH_BYTES}). Use a shorter name or destination.` : '';
 }
 
 function setConnected(on){
@@ -516,7 +572,8 @@ function renderToolbar(){
   $('fbToolbar').style.display = n? 'flex':'none';
   if(n){
     $('fbCount').textContent = `${n} selected`;
-    $('renameBtn').disabled = n!==1;
+    $('renameBtn').disabled = n!==1 || !fwSupported;
+    $('moveBtn').disabled = !fwSupported;
     $('downloadBtn').disabled = false;
   }
   const sa=$('selAll');
@@ -640,22 +697,25 @@ async function opDownload(){
   endDl();
 }
 async function opNewFolder(){
+  if(writesBlocked()) return;
   const name=(prompt('New folder name:','')||'').trim();
   if(!name) return;
   const full=currentPath()+name;
-  if(!pathOk(full,name)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
+  if(!folderOk(full,name)){ alert(`Too long — folder name must be ≤${MAX_NAME_BYTES} bytes and folder path ≤${MAX_FOLDER_BYTES} bytes (this one is ${pathLen(full)}).`); return; }
   try{ const r=await sendRequest(packet(CMD.MKDIR,0,new Uint8Array(strBytes(full))));
     if(r.status!==0) throw new Error('mkdir failed (status '+r.status+')');
     log('created folder '+name,'ok'); localUpsert([{name, type:1, size:0}]); await refreshStorage();
   }catch(e){ log(e.message,'err'); alert(e.message); }
 }
 async function opRename(){
-  if(selected.size!==1) return;
+  if(selected.size!==1 || writesBlocked()) return;
   const oldName=[...selected][0];
   const newName=(prompt('Rename to:',oldName)||'').trim();
   if(!newName || newName===oldName) return;
   const full=currentPath()+newName;
-  if(!pathOk(full,newName)){ alert(`Too long — name must be ≤${MAX_NAME_BYTES} bytes and full path ≤${MAX_PATH_BYTES} bytes.`); return; }
+  const it=curItems.find(i=>i.name===oldName);
+  const problem=await pathProblem(currentPath()+oldName, full, newName, !!(it && it.type===1));
+  if(problem){ alert(problem); return; }
   try{ await renamePath(currentPath()+oldName, full); log(`renamed ${oldName} → ${newName}`,'ok'); localRename(oldName,newName); selected.clear(); renderToolbar(); }
   catch(e){ log(e.message,'err'); alert(e.message); }
 }
@@ -685,7 +745,7 @@ async function opDelete(){
 let moveSegs=[];
 function moveCurrentPath(){ return `${drive}:/`+moveSegs.join('/')+(moveSegs.length?'/':''); }
 async function openMove(){
-  if(!selected.size) return;
+  if(!selected.size || writesBlocked()) return;
   moveSegs = [];
   $('moveCount').textContent = `${selected.size} item(s)`;
   $('moveModal').style.display='flex';
@@ -710,6 +770,7 @@ async function renderMove(){
   }
 }
 async function doMove(){
+  if(writesBlocked()) return;
   const dest=moveCurrentPath();
   const src=currentPath();
   if(dest===src){ alert('That is the current folder — pick a different destination.'); return; }
@@ -720,7 +781,8 @@ async function doMove(){
     const isDir=it && it.type===1;
     if(isDir && dest.startsWith(src+nm+'/')){ log('skip '+nm+': cannot move a folder into itself','err'); fail++; continue; }
     const newFull=dest+nm;
-    if(!pathOk(newFull,nm)){ log('skip '+nm+': destination path too long','err'); fail++; continue; }
+    const problem=await pathProblem(src+nm, newFull, nm, isDir);
+    if(problem){ log('skip '+nm+': '+problem,'err'); fail++; continue; }
     try{ await renamePath(src+nm, newFull); ok++; moved.push(nm); }catch(e){ fail++; log('move '+nm+': '+e.message,'err'); }
   }
   log(`moved ${ok}, failed ${fail}`, fail?'err':'ok');
@@ -798,7 +860,11 @@ async function connect(){
 
     let fw=null; try{ fw=await getVersion(); }catch(e){}
     $('oledFw').textContent = fw ? fw.slice(0,16) : 'n/a';
-    if(fw) log('firmware: '+fw,'ok');
+    fwSupported = isSupportedFirmware(fw);
+    $('fwWarnVer').textContent = fw || 'no version';
+    if(fwSupported) log('firmware: '+fw,'ok');
+    else log(`firmware: ${fw||'unknown'} — uploads, new folders, renames and moves are off (needs v2.6 or later)`,'err');
+    applyFwGate();
 
     pathSegs=[]; await refresh(true);
   }catch(e){
@@ -810,6 +876,7 @@ let batchRunning=false;
 function onDisconnect(){
   setConnected(false);
   if(batchRunning){ log('device disconnected (mid-batch)','err'); return; }
+  $('fwWarn').style.display='none';
   $('oledFw').textContent='—'; $('oledStore').textContent='—'; $('crumbs').textContent='—'; $('fbToolbar').style.display='none'; $('fbHead').style.display='none'; $('newFolderBtn').style.display='none'; selected.clear(); $('fileList').innerHTML='<li class="empty">Disconnected.</li>'; log('device disconnected','err');
 }
 function isDisconnectError(e){
@@ -829,10 +896,11 @@ async function reconnectMidBatch(){
 }
 
 async function handleFiles(fileList){
+  if(writesBlocked()) return;
   const added=[];
   for(const f of fileList){
     const nameBytes = enc.encode(f.name).length;
-    const pathBytes = enc.encode(currentPath()+f.name).length;
+    const pathBytes = pathLen(currentPath()+f.name);
     if(nameBytes > MAX_NAME_BYTES){
       log(`skip "${f.name}" — name is ${nameBytes} bytes (max ${MAX_NAME_BYTES}). Shorten the filename.`, 'err'); continue;
     }
@@ -866,14 +934,14 @@ function fontFold(s){
 
 function fits(name, folderPath){
   return enc.encode(name).length<=MAX_NAME_BYTES &&
-         enc.encode(folderPath+'/'+name).length<=MAX_PATH_BYTES;
+         pathLen(folderPath+'/'+name)<=MAX_PATH_BYTES;
 }
 
 function suggestName(filename, folderPath){
   const dot=filename.lastIndexOf('.');
   const ext = dot>=0 ? filename.slice(dot) : '';
   let base = fontFold(dot>=0 ? filename.slice(0,dot) : filename);
-  const room = Math.min(MAX_NAME_BYTES, MAX_PATH_BYTES - enc.encode(folderPath+'/').length) - enc.encode(ext).length;
+  const room = Math.min(MAX_NAME_BYTES, MAX_PATH_BYTES - pathLen(folderPath+'/')) - enc.encode(ext).length;
   if(room < 1) return null;
   while(enc.encode(base).length > room && /\s*\([^()]*\)\s*$/.test(base)){
     base = base.replace(/\s*\([^()]*\)\s*$/,'').replace(/\s+$/,'');
@@ -941,12 +1009,26 @@ function buildPlan(fileList, strategy){
   }
 
   const plan=[]; plan.splitSources=splitSources; plan.splitParts=splitParts;
+  const folderIssue=new Map();
+  const checkFolders=folders=>{
+    for(let i=1;i<=folders.length;i++){
+      const p=['E:','amiibo',...folders.slice(0,i)].join('/');
+      if(!folderIssue.has(p)){
+        const nb=enc.encode(folders[i-1]).length, pb=pathLen(p);
+        folderIssue.set(p, nb>MAX_NAME_BYTES ? `name ${nb}B > ${MAX_NAME_BYTES}` : pb>MAX_FOLDER_BYTES ? `folder path ${pb}B > ${MAX_FOLDER_BYTES}` : '');
+      }
+      if(folderIssue.get(p)) return p;
+    }
+    return '';
+  };
   for(const it of items){
     if(it.notbin){ plan.push({name:it.name, notbin:true}); continue; }
     const folderPath=['E:','amiibo',...it.folders].join('/');
+    const bad=checkFolders(it.folders);
+    if(bad){ plan.push({file:it.file, name:it.name.normalize('NFC'), folderPath, badFolder:bad}); continue; }
     const filename=it.name.normalize('NFC');
     const nameB=enc.encode(filename).length;
-    const pathB=enc.encode(folderPath+'/'+filename).length;
+    const pathB=pathLen(folderPath+'/'+filename);
     const nonascii=[...filename].some(c=>!fontSafe(c));
     const tooName=nameB>MAX_NAME_BYTES, tooPath=pathB>MAX_PATH_BYTES;
     let reason='';
@@ -957,11 +1039,12 @@ function buildPlan(fileList, strategy){
     if(mustFix||nonascii){ item.suggested=suggestName(filename, folderPath); item.fixName=item.suggested||''; item.include=!!item.suggested; }
     plan.push(item);
   }
+  plan.badFolders=[...folderIssue].filter(([,r])=>r).map(([p,r])=>({path:p.replace(/^E:/,''), reason:r, count:plan.filter(x=>x.badFolder===p).length})).filter(f=>f.count);
   return plan;
 }
 
 function resolveItem(p){
-  if(p.notbin) return {action:'skip'};
+  if(p.notbin || p.badFolder) return {action:'skip'};
   if((p.mustFix||p.nonascii) && p.include){
     const nm=(p.fixName||'').trim();
     if(nm && fits(nm, p.folderPath)) return {action:'upload', name:nm, renamed:nm!==p.name};
@@ -981,6 +1064,7 @@ function renderPlan(){
     `<span>Will upload <b>${up}</b></span>`+
     (batchPlan.splitParts?`<span>${capSize()}-cap: split <b>${batchPlan.splitSources}</b> folder(s) → <b>${batchPlan.splitParts}</b></span>`:'')+
     (fixables.length?`<span class="bad">Needs attention <b>${fixables.length}</b></span>`:'')+
+    (batchPlan.badFolders.length?`<span class="bad">Folder too long <b>${batchPlan.badFolders.length}</b></span>`:'')+
     (notbin.length?`<span>Not .bin <b>${notbin.length}</b></span>`:'')+`</div>`;
 
   if(fixables.length){
@@ -1000,12 +1084,17 @@ function renderPlan(){
         `</div></div>`;
     }).join('')+`</div>`;
   }
+  if(batchPlan.badFolders.length){
+    html += `<div class="r bad notbin">These folders are too long for the device, so their files won't upload (folder names ≤${MAX_NAME_BYTES} bytes, folder paths ≤${MAX_FOLDER_BYTES} bytes, counted from the /). Shorten them on your computer and pick the folder again:<br>`+
+            batchPlan.badFolders.map(f=>`${escapeHtml(f.path)} — ${f.reason}, ${f.count} file(s)`).join('<br>')+`</div>`;
+  }
   if(notbin.length){
     html += `<div class="r notbin">Skipping ${notbin.length} non-.bin file(s): `+
             notbin.slice(0,6).map(p=>escapeHtml(p.name)).join(', ')+(notbin.length>6?'…':'')+`</div>`;
   }
   el.innerHTML=html;
   $('batchRun').style.display = up?'flex':'none';
+  applyFwGate();
 
   const fa=$('fixAll');
   if(fa) fa.onchange=()=>{ fixables.forEach(p=>{p.include=fa.checked;}); renderPlan(); };
@@ -1024,7 +1113,7 @@ function renderPlan(){
 }
 
 async function startBatch(){
-  if(!batchPlan) return;
+  if(!batchPlan || writesBlocked()) return;
   if(!(device && device.gatt.connected)){ alert('Connect to the device first.'); return; }
   batchCancel=false;
   $('cancelBatch').style.display='inline-block';
